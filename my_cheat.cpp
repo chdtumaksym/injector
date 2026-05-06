@@ -1,43 +1,46 @@
 #include <windows.h>
-#include <fstream>
+#include <stdint.h>
 
-DWORD WINAPI FinalDebugThread(LPVOID lpParam) {
-    std::ofstream log("CS2_Debug_Log.txt", std::ios::app);
-    log << "[!] Searching for game data...\n";
-    log.flush();
+namespace offsets {
+    // ВСТАВИЛ ТВОИ НОВЫЕ ЦИФРЫ (HEX)
+    constexpr uintptr_t dwLocalPlayerPawn = 0x2057720; 
+    constexpr uintptr_t dwViewAngles = 0x2341888;
+    constexpr uintptr_t m_iHealth = 0x334;
+    constexpr uintptr_t m_iTeamNum = 0x3CB;
+    constexpr uintptr_t m_iIDEntIndex = 0x1544; 
+}
 
+DWORD WINAPI AutoFarmThread(LPVOID lpParam) {
     uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
-    if (!client) {
-        log << "[ERROR] client.dll not found!\n";
-        return 0;
-    }
-
-    // Вместо оффсета, попробуем проверить сам базовый адрес
-    log << "[INFO] client.dll base: " << std::hex << client << "\n";
-    
-    // Проверим, доступен ли наш оффсет для чтения вообще
-    MEMORY_BASIC_INFORMATION mbi;
-    if (VirtualQuery((LPCVOID)(client + 0x1824E18), &mbi, sizeof(mbi))) {
-        log << "[INFO] Memory protection at offset: " << std::hex << mbi.Protect << "\n";
-        if (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) {
-            log << "[INFO] Offset is readable! Waiting for target...\n";
-        } else {
-            log << "[WARN] Offset is NOT readable or protected!\n";
-        }
-    }
-    log.flush();
+    if (!client) return 0;
 
     while (true) {
-        // Мы просто будем ждать, пока что-то изменится в памяти
-        // Если лог не растет, значит данные игрока лежат СОВСЕМ в другом месте
-        Sleep(5000);
-        log << "Scanning...\n";
-        log.flush();
+        // 1. Безопасно получаем игрока
+        uintptr_t localPlayer = *(uintptr_t*)(client + offsets::dwLocalPlayerPawn);
+        
+        if (localPlayer > 0x1000) {
+            // 2. Проверяем, кто в прицеле
+            int crossId = *(int*)(localPlayer + offsets::m_iIDEntIndex);
+
+            // Если ID врага (от 1 до 64)
+            if (crossId > 0 && crossId <= 64) {
+                // 3. СТРЕЛЬБА (TriggerBot)
+                INPUT input[2] = {};
+                input[0].type = INPUT_MOUSE;
+                input[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+                input[1].type = INPUT_MOUSE;
+                input[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+                
+                SendInput(2, input, sizeof(INPUT));
+                Sleep(150); // Задержка, чтобы не забанил VAC Net за слишком быструю стрельбу
+            }
+        }
+        Sleep(1); 
     }
     return 0;
 }
 
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
-    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, FinalDebugThread, 0, 0, 0));
+    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, AutoFarmThread, 0, 0, 0));
     return TRUE;
 }
