@@ -4,15 +4,13 @@
 #include <tlhelp32.h>
 #include <fstream>
 
-// Структура данных для передачи в DLL
 struct MANUAL_MAPPING_DATA {
     HMODULE(__stdcall* pLoadLibraryA)(LPCSTR);
     FARPROC(__stdcall* pGetProcAddress)(HMODULE, LPCSTR);
     BYTE* pBase;
-    ULONG_PTR pOldRip; 
 };
 
-// -------------------- SHELLCODE (x64) --------------------
+// -------------------- SHELLCODE --------------------
 void __stdcall Shellcode(MANUAL_MAPPING_DATA* pData) {
     if (!pData || !pData->pBase) return;
 
@@ -20,7 +18,7 @@ void __stdcall Shellcode(MANUAL_MAPPING_DATA* pData) {
     auto* dosHeader = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
     auto* ntHeaders = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dosHeader->e_lfanew);
 
-    // 1. Релокации (Base Relocations)
+    // 1. Релокации
     auto delta = reinterpret_cast<ULONG_PTR>(base) - ntHeaders->OptionalHeader.ImageBase;
     if (delta && ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size) {
         auto* reloc = reinterpret_cast<IMAGE_BASE_RELOCATION*>(base + ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress);
@@ -37,7 +35,7 @@ void __stdcall Shellcode(MANUAL_MAPPING_DATA* pData) {
         }
     }
 
-    // 2. Импорты (Imports)
+    // 2. Импорты
     if (ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size) {
         auto* importDesc = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
         while (importDesc->Name) {
@@ -63,10 +61,8 @@ void __stdcall Shellcode(MANUAL_MAPPING_DATA* pData) {
         DllMain(reinterpret_cast<HMODULE>(base), DLL_PROCESS_ATTACH, nullptr);
     }
 
-    // 4. Очистка и возврат потока в игру
+    // 4. Скрытие
     for (DWORD i = 0; i < ntHeaders->OptionalHeader.SizeOfHeaders; ++i) base[i] = 0;
-    auto pReturn = reinterpret_cast<void(*)()>(pData->pOldRip);
-    pReturn(); 
 }
 
 // -------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ --------------------
@@ -84,16 +80,13 @@ DWORD GetTargetThreadID(DWORD pid) {
     CloseHandle(hSnap); return 0;
 }
 
-// -------------------- ЛОАДЕР --------------------
-
 bool ManualMapDLL(HANDLE hProcess, const std::vector<char>& buffer) {
     auto* dosHeader = (IMAGE_DOS_HEADER*)buffer.data();
     auto* ntHeaders = (IMAGE_NT_HEADERS*)(buffer.data() + dosHeader->e_lfanew);
 
     LPVOID remoteBase = VirtualAllocEx(hProcess, nullptr, ntHeaders->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    if (!remoteBase) return false;
-
     WriteProcessMemory(hProcess, remoteBase, buffer.data(), ntHeaders->OptionalHeader.SizeOfHeaders, nullptr);
+    
     auto* section = IMAGE_FIRST_SECTION(ntHeaders);
     for (int i = 0; i < ntHeaders->FileHeader.NumberOfSections; ++i) {
         WriteProcessMemory(hProcess, (BYTE*)remoteBase + section[i].VirtualAddress, buffer.data() + section[i].PointerToRawData, section[i].SizeOfRawData, nullptr);
@@ -108,52 +101,39 @@ bool ManualMapDLL(HANDLE hProcess, const std::vector<char>& buffer) {
     LPVOID remoteShell = VirtualAllocEx(hProcess, nullptr, shellSize + sizeof(data), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     LPVOID remoteStruct = (BYTE*)remoteShell + shellSize;
 
-    DWORD tid = GetTargetThreadID(GetProcessId(hProcess));
-    HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, tid);
-    if (!hThread) return false;
-
-    SuspendThread(hThread);
-
-    CONTEXT ctx = { CONTEXT_CONTROL };
-    GetThreadContext(hThread, &ctx);
-    data.pOldRip = ctx.Rip;
-
     WriteProcessMemory(hProcess, remoteStruct, &data, sizeof(data), nullptr);
     WriteProcessMemory(hProcess, remoteShell, Shellcode, shellSize, nullptr);
 
-    ctx.Rip = (ULONG_PTR)remoteShell;
-    SetThreadContext(hThread, &ctx);
-    ResumeThread(hThread);
+    // Запуск через QueueUserAPC
+    DWORD tid = GetTargetThreadID(GetProcessId(hProcess));
+    HANDLE hThread = OpenThread(THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, tid);
+    
+    if (QueueUserAPC((PAPCFUNC)remoteShell, hThread, (ULONG_PTR)remoteStruct)) {
+        std::cout << "[+] SUCCESS! Now CLICK on the Notepad window to trigger the cheat.\n";
+    } else {
+        std::cout << "[!] Failed to queue APC.\n";
+    }
 
-    Sleep(2000); 
     CloseHandle(hThread);
     return true;
 }
 
 int main() {
     DWORD pid;
-    std::cout << "--- BYPASS INJECTOR ---\nTarget PID: "; std::cin >> pid;
+    std::cout << "Target PID: "; std::cin >> pid;
     
     std::ifstream file("my_cheat.dll", std::ios::binary | std::ios::ate);
-    if (!file.is_open()) { 
-        std::cout << "[!] ERROR: my_cheat.dll not found in current folder!\n"; 
-        Sleep(5000); return 1; 
-    }
+    if (!file.is_open()) { std::cout << "DLL NOT FOUND!"; return 1; }
     
     std::streamsize size = file.tellg();
     file.seekg(0, std::ios::beg);
     std::vector<char> buffer(size);
     file.read(buffer.data(), size);
 
-    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-    if (hProcess && ManualMapDLL(hProcess, buffer)) {
-        std::cout << "[+] SUCCESS! Check your target process.\n";
-    } else {
-        std::cout << "[!] FAILED: Could not access process memory.\n";
-    }
+    HANDLE hProcess = OpenProcess(PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, pid);
+    ManualMapDLL(hProcess, buffer);
     
-    if (hProcess) CloseHandle(hProcess);
-    std::cout << "Closing in 5 seconds...\n";
+    CloseHandle(hProcess);
     Sleep(5000);
     return 0;
 }
