@@ -1,13 +1,12 @@
 #include <windows.h>
 #include <fstream>
-#include <string>
 
-// Структура координат
 struct Vector3 { float x, y, z; };
 
 namespace offsets {
-    // ВНИМАНИЕ: Проверь эти значения в своем JSON файле (раздел "offsets")
-    constexpr uintptr_t dwLocalPlayerPawn = 0x1824A18; 
+    // Взято из твоего скриншота offsets.json (25315864)
+    constexpr uintptr_t dwLocalPlayerPawn = 0x1824E18; 
+    // Взято из client_dll.json (m_vOldOrigin)
     constexpr uintptr_t m_vOldOrigin = 0x127C; 
 }
 
@@ -18,28 +17,27 @@ DWORD WINAPI AnalyzeThread(LPVOID lpParam) {
         clientModule = (uintptr_t)GetModuleHandleA("client.dll");
     }
 
-    // Создаем файл на диске C, чтобы точно его найти
-    std::ofstream log("C:\\cs2_test_log.txt", std::ios::app);
-    log << "Started\n";
+    // Сохраняем файл в папку с игрой (game/bin/win64)
+    std::ofstream log("Bypass_Log.txt", std::ios::app);
+    log << "--- Start session ---\n";
 
     while (true) {
-        // Безопасная проверка: не читаем, если указатель на модуль битый
         if (clientModule) {
-            uintptr_t localPlayerPawn = *(uintptr_t*)(clientModule + offsets::dwLocalPlayerPawn);
-            
-            // Если игрок заспавнился и указатель не нулевой
-            if (localPlayerPawn != 0) {
-                // Используем SEH (__try/__except) или простые проверки, чтобы не вылетать
+            // Безопасное чтение указателя
+            uintptr_t localPlayerPawn = 0;
+            __try {
+                localPlayerPawn = *(uintptr_t*)(clientModule + offsets::dwLocalPlayerPawn);
+            } __except (EXCEPTION_EXECUTE_HANDLER) { localPlayerPawn = 0; }
+
+            if (localPlayerPawn) {
                 __try {
                     Vector3 pos = *(Vector3*)(localPlayerPawn + offsets::m_vOldOrigin);
-                    log << "X: " << pos.x << " Y: " << pos.y << " Z: " << pos.z << std::endl;
+                    log << "Pos: " << pos.x << " " << pos.y << " " << pos.z << std::endl;
                     log.flush();
-                } __except (EXCEPTION_EXECUTE_HANDLER) {
-                    // Если адрес оказался битым, мы просто игнорируем ошибку и не вылетаем
-                }
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
             }
         }
-        Sleep(1000);
+        Sleep(1000); 
     }
     return 0;
 }
