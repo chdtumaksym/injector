@@ -1,46 +1,44 @@
 #include <windows.h>
+#include <fstream>
 #include <stdint.h>
 
-namespace offsets {
-    // ВСТАВИЛ ТВОИ НОВЫЕ ЦИФРЫ (HEX)
-    constexpr uintptr_t dwLocalPlayerPawn = 0x2057720; 
-    constexpr uintptr_t dwViewAngles = 0x2341888;
-    constexpr uintptr_t m_iHealth = 0x334;
-    constexpr uintptr_t m_iTeamNum = 0x3CB;
-    constexpr uintptr_t m_iIDEntIndex = 0x1544; 
-}
+DWORD WINAPI OffsetScannerThread(LPVOID lpParam) {
+    std::ofstream log("CS2_Scanner_Log.txt", std::ios::app);
+    log << "--- STARTING AUTO-SCAN ---\n";
 
-DWORD WINAPI AutoFarmThread(LPVOID lpParam) {
     uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
-    if (!client) return 0;
+    // Используем твой новый рабочий адрес (0x2057720)
+    uintptr_t localPlayerPawn = 0x2057720;
 
     while (true) {
-        // 1. Безопасно получаем игрока
-        uintptr_t localPlayer = *(uintptr_t*)(client + offsets::dwLocalPlayerPawn);
-        
+        uintptr_t localPlayer = *(uintptr_t*)(client + localPlayerPawn);
         if (localPlayer > 0x1000) {
-            // 2. Проверяем, кто в прицеле
-            int crossId = *(int*)(localPlayer + offsets::m_iIDEntIndex);
-
-            // Если ID врага (от 1 до 64)
-            if (crossId > 0 && crossId <= 64) {
-                // 3. СТРЕЛЬБА (TriggerBot)
-                INPUT input[2] = {};
-                input[0].type = INPUT_MOUSE;
-                input[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-                input[1].type = INPUT_MOUSE;
-                input[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+            // Сканируем диапазон, где обычно лежит ID прицела (от 0x1300 до 0x1600)
+            for (uintptr_t offset = 0x1300; offset <= 0x1600; offset += 4) {
+                int value = *(int*)(localPlayer + offset);
                 
-                SendInput(2, input, sizeof(INPUT));
-                Sleep(150); // Задержка, чтобы не забанил VAC Net за слишком быструю стрельбу
+                // Если мы видим ID врага (от 1 до 64)
+                if (value > 0 && value <= 64) {
+                    log << "[FOUND CANDIDATE] Offset: 0x" << std::hex << offset << " Value: " << std::dec << value << "\n";
+                    log.flush();
+                    
+                    // ЕСЛИ ЭТО ТОТ САМЫЙ ОФФСЕТ - СТРЕЛЯЕМ!
+                    INPUT input = { 0 };
+                    input.type = INPUT_MOUSE;
+                    input.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+                    SendInput(1, &input, sizeof(INPUT));
+                    Sleep(10);
+                    input.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+                    SendInput(1, &input, sizeof(INPUT));
+                }
             }
         }
-        Sleep(1); 
+        Sleep(100); 
     }
     return 0;
 }
 
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
-    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, AutoFarmThread, 0, 0, 0));
+    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, OffsetScannerThread, 0, 0, 0));
     return TRUE;
 }
