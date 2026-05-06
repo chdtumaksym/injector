@@ -4,7 +4,7 @@
 #include <string>
 #include <stdint.h>
 
-// --- Оффсеты внутри классов ---
+// --- Оффсеты ---
 namespace offsets {
     constexpr uintptr_t m_vOldOrigin = 0x127C; 
     constexpr uintptr_t m_iHealth = 0x334;
@@ -74,7 +74,7 @@ DWORD WINAPI CheatThread(LPVOID lpParam) {
         if (localPlayer) {
             int myTeam = *reinterpret_cast<int*>(localPlayer + offsets::m_iTeamNum);
 
-            for (int i = 0; i (entity + offsets::m_iHealth);
+            for (int i = 1; i (entity + offsets::m_iHealth);
                 int team = *reinterpret_cast<int*>(entity + offsets::m_iTeamNum);
 
                 if (health > 0 && health <= 100 && team != myTeam) {
