@@ -1,7 +1,6 @@
 #include <windows.h>
 #include <iostream>
 #include <vector>
-#include <tlhelp32.h>
 #include <fstream>
 
 struct MANUAL_MAPPING_DATA {
@@ -10,7 +9,7 @@ struct MANUAL_MAPPING_DATA {
     BYTE* pBase;
 };
 
-// -------------------- SHELLCODE --------------------
+// -------------------- SHELLCODE (x64) --------------------
 void __stdcall Shellcode(MANUAL_MAPPING_DATA* pData) {
     if (!pData || !pData->pBase) return;
 
@@ -55,43 +54,33 @@ void __stdcall Shellcode(MANUAL_MAPPING_DATA* pData) {
         }
     }
 
-    // 3. Вызов DllMain
+    // 3. Точка входа
     if (ntHeaders->OptionalHeader.AddressOfEntryPoint) {
         auto DllMain = reinterpret_cast<BOOL(APIENTRY*)(HMODULE, DWORD, LPVOID)>(base + ntHeaders->OptionalHeader.AddressOfEntryPoint);
         DllMain(reinterpret_cast<HMODULE>(base), DLL_PROCESS_ATTACH, nullptr);
     }
 
-    // 4. Скрытие
+    // 4. Зачистка
     for (DWORD i = 0; i < ntHeaders->OptionalHeader.SizeOfHeaders; ++i) base[i] = 0;
 }
 
-// -------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ --------------------
-
-DWORD GetTargetThreadID(DWORD pid) {
-    THREADENTRY32 te32 = { sizeof(te32) };
-    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (Thread32First(hSnap, &te32)) {
-        do {
-            if (te32.th32OwnerProcessID == pid) {
-                CloseHandle(hSnap); return te32.th32ThreadID;
-            }
-        } while (Thread32Next(hSnap, &te32));
-    }
-    CloseHandle(hSnap); return 0;
-}
+// -------------------- ЛОАДЕР --------------------
 
 bool ManualMapDLL(HANDLE hProcess, const std::vector<char>& buffer) {
     auto* dosHeader = (IMAGE_DOS_HEADER*)buffer.data();
     auto* ntHeaders = (IMAGE_NT_HEADERS*)(buffer.data() + dosHeader->e_lfanew);
 
+    // Выделяем память под DLL (RWX - для теста самое надежное)
     LPVOID remoteBase = VirtualAllocEx(hProcess, nullptr, ntHeaders->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!remoteBase) return false;
+
     WriteProcessMemory(hProcess, remoteBase, buffer.data(), ntHeaders->OptionalHeader.SizeOfHeaders, nullptr);
-    
     auto* section = IMAGE_FIRST_SECTION(ntHeaders);
     for (int i = 0; i < ntHeaders->FileHeader.NumberOfSections; ++i) {
         WriteProcessMemory(hProcess, (BYTE*)remoteBase + section[i].VirtualAddress, buffer.data() + section[i].PointerToRawData, section[i].SizeOfRawData, nullptr);
     }
 
+    // Готовим данные
     MANUAL_MAPPING_DATA data = { 0 };
     data.pLoadLibraryA = LoadLibraryA;
     data.pGetProcAddress = GetProcAddress;
@@ -104,36 +93,41 @@ bool ManualMapDLL(HANDLE hProcess, const std::vector<char>& buffer) {
     WriteProcessMemory(hProcess, remoteStruct, &data, sizeof(data), nullptr);
     WriteProcessMemory(hProcess, remoteShell, Shellcode, shellSize, nullptr);
 
-    // Запуск через QueueUserAPC
-    DWORD tid = GetTargetThreadID(GetProcessId(hProcess));
-    HANDLE hThread = OpenThread(THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, tid);
+    // Запуск через прямой поток (Самый надежный способ)
+    HANDLE hThread = CreateRemoteThread(hProcess, nullptr, 0, (LPTHREAD_START_ROUTINE)remoteShell, remoteStruct, 0, nullptr);
     
-    if (QueueUserAPC((PAPCFUNC)remoteShell, hThread, (ULONG_PTR)remoteStruct)) {
-        std::cout << "[+] SUCCESS! Now CLICK on the Notepad window to trigger the cheat.\n";
-    } else {
-        std::cout << "[!] Failed to queue APC.\n";
+    if (hThread) {
+        std::cout << "[+] SUCCESS! Thread created.\n";
+        WaitForSingleObject(hThread, 5000);
+        CloseHandle(hThread);
+        return true;
     }
 
-    CloseHandle(hThread);
-    return true;
+    return false;
 }
 
 int main() {
     DWORD pid;
-    std::cout << "Target PID: "; std::cin >> pid;
+    std::cout << "--- FINAL TEST ---\nTarget PID: "; std::cin >> pid;
     
     std::ifstream file("my_cheat.dll", std::ios::binary | std::ios::ate);
-    if (!file.is_open()) { std::cout << "DLL NOT FOUND!"; return 1; }
+    if (!file.is_open()) { std::cout << "DLL NOT FOUND!"; Sleep(3000); return 1; }
     
     std::streamsize size = file.tellg();
     file.seekg(0, std::ios::beg);
     std::vector<char> buffer(size);
     file.read(buffer.data(), size);
 
-    HANDLE hProcess = OpenProcess(PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, pid);
-    ManualMapDLL(hProcess, buffer);
+    // Просим права на запись и создание потока
+    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
     
-    CloseHandle(hProcess);
+    if (hProcess && ManualMapDLL(hProcess, buffer)) {
+        std::cout << "[+] INJECTION FINISHED!\n";
+    } else {
+        std::cout << "[!] FATAL ERROR: Check Admin rights or PID.\n";
+    }
+    
+    if (hProcess) CloseHandle(hProcess);
     Sleep(5000);
     return 0;
 }
