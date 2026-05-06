@@ -18,34 +18,49 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     uintptr_t moduleBase = (uintptr_t)GetModuleHandleA(moduleName);
     if (!moduleBase) return 0;
 
-    auto PatternToBytes = [](const char* pattern) {
+    auto PatternToBytes = [](const char* p) {
         std::vector<int> bytes;
-        char* start = const_cast<char*>(pattern);
-        char* end = const_cast<char*>(pattern) + strlen(pattern);
-        for (char* current = start; current < end; ++current) {
-            if (*current == '?') {
-                current++; if (*current == '?') current++;
+        char* start = const_cast<char*>(p);
+        char* end = const_cast<char*>(p) + strlen(p);
+        for (char* curr = start; curr < end; ++curr) {
+            if (*curr == '?') {
+                curr++; if (*curr == '?') curr++;
                 bytes.push_back(-1);
             } else {
-                bytes.push_back((int)strtoul(current, &current, 16));
+                bytes.push_back((int)strtoul(curr, &curr, 16));
             }
         }
         return bytes;
     };
 
-    PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)moduleBase;
-    PIMAGE_NT_HEADERS ntHeaders = reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<BYTE*>(moduleBase) + dosHeader->e_lfanew);
-    DWORD sizeOfImage = ntHeaders->OptionalHeader.SizeOfImage;
+    PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)moduleBase;
+    PIMAGE_NT_HEADERS nt = reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<BYTE*>(moduleBase) + dos->e_lfanew);
+    DWORD size = nt->OptionalHeader.SizeOfImage;
     auto patternBytes = PatternToBytes(pattern);
-    BYTE* scanStart = (BYTE*)moduleBase;
+    BYTE* scanStart = reinterpret_cast<BYTE*>(moduleBase);
 
-    for (DWORD i = 0; i (entityListPtr);
+    for (DWORD i = 0; i < size - patternBytes.size(); ++i) {
+        bool found = true;
+        for (size_t j = 0; j < patternBytes.size(); ++j) {
+            if (patternBytes[j] != -1 && scanStart[i + j] != static_cast<BYTE>(patternBytes[j])) {
+                found = false; break;
+            }
+        }
+        if (found) return reinterpret_cast<uintptr_t>(scanStart + i);
+    }
+    return 0;
+}
+
+// --- 2. Функция получения сущности (перенесена ВЫШЕ для видимости) ---
+uintptr_t GetEntityByIndex(uintptr_t entityListPtr, int index) {
+    if (!entityListPtr) return 0;
+    uintptr_t entityList = *reinterpret_cast<uintptr_t*>(entityListPtr);
     if (!entityList) return 0;
 
-    uintptr_t chunk = *reinterpret_cast<uintptr_t*>(entityList + 0x8 * (index >> 9) + 0x10);
+    uintptr_t chunk = *reinterpret_cast<uintptr_t*>(entityList + 0x8 * (static_cast<uintptr_t>(index) >> 9) + 0x10);
     if (!chunk) return 0;
 
-    return *reinterpret_cast<uintptr_t*>(chunk + 0x78 * (index & 0x1FF));
+    return *reinterpret_cast<uintptr_t*>(chunk + 0x78 * (static_cast<uintptr_t>(index) & 0x1FF));
 }
 
 // --- 3. Основной поток чита ---
@@ -54,10 +69,9 @@ DWORD WINAPI CheatThread(LPVOID lpParam) {
     log << "--- Start Scanning ---\n";
     log.flush();
 
-    uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
+    uintptr_t client = reinterpret_cast<uintptr_t>(GetModuleHandleA("client.dll"));
     if (!client) return 0;
 
-    // Ищем сигнатуры
     uintptr_t lpAddr = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 4E");
     uintptr_t elAddr = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 40 8B FA C1 EB");
 
@@ -92,7 +106,7 @@ DWORD WINAPI CheatThread(LPVOID lpParam) {
 // --- 4. Точка входа ---
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
     if (r == DLL_PROCESS_ATTACH) {
-        HANDLE hThread = CreateThread(0, 0, (LPTHREAD_START_ROUTINE)CheatThread, 0, 0, 0);
+        HANDLE hThread = CreateThread(nullptr, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(CheatThread), nullptr, 0, nullptr);
         if (hThread) CloseHandle(hThread);
     }
     return TRUE;
