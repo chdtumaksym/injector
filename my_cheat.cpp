@@ -4,42 +4,42 @@
 struct Vector3 { float x, y, z; };
 
 namespace offsets {
+    // ВНИМАНИЕ: Если опять вылетит, значит эти цифры всё же не те!
     constexpr uintptr_t dwLocalPlayerPawn = 0x1824E18; 
     constexpr uintptr_t m_vOldOrigin = 0x127C; 
 }
 
-// Вспомогательная функция для безопасного чтения
-template <typename T>
-T ReadMemory(uintptr_t address) {
-    if (address < 0x1000) return T{}; // Базовая проверка на мусорный адрес
-    return *reinterpret_cast<T*>(address);
-}
-
 DWORD WINAPI AnalyzeThread(LPVOID lpParam) {
-    uintptr_t clientModule = 0;
-    while (!clientModule) {
-        clientModule = (uintptr_t)GetModuleHandleA("client.dll");
-        Sleep(500);
-    }
+    // Получаем путь к рабочему столу
+    char desktopPath[MAX_PATH];
+    ExpandEnvironmentStringsA("%USERPROFILE%\\Desktop\\Bypass_Log.txt", desktopPath, MAX_PATH);
+    
+    std::ofstream log(desktopPath, std::ios::app);
+    log << "DLL STARTED" << std::endl; // std::endl принудительно пишет в файл
 
-    std::ofstream log("Bypass_Log.txt", std::ios::app);
-    log << "--- Start session ---\n";
+    uintptr_t clientModule = (uintptr_t)GetModuleHandleA("client.dll");
+    
+    // Даем игре 5 секунд "продышаться" после инъекции
+    Sleep(5000);
 
     while (true) {
-        // Читаем указатель на игрока
-        uintptr_t localPlayerPawn = ReadMemory<uintptr_t>(clientModule + offsets::dwLocalPlayerPawn);
-
-        if (localPlayerPawn) {
-            // Читаем координаты
-            Vector3 pos = ReadMemory<Vector3>(localPlayerPawn + offsets::m_vOldOrigin);
+        if (clientModule) {
+            // Читаем очень аккуратно через указатель
+            uintptr_t* pLocalPlayer = (uintptr_t*)(clientModule + offsets::dwLocalPlayerPawn);
             
-            // Если координаты не нулевые (значит мы заспавнились)
-            if (pos.x != 0 || pos.y != 0) {
-                log << "Pos: " << pos.x << " " << pos.y << " " << pos.z << std::endl;
-                log.flush();
+            // Проверяем, не указывает ли адрес в пустоту (0)
+            if (pLocalPlayer && *pLocalPlayer > 0x1000) {
+                uintptr_t localPlayerPawn = *pLocalPlayer;
+                Vector3* pPos = (Vector3*)(localPlayerPawn + offsets::m_vOldOrigin);
+                
+                if (pPos) {
+                    Vector3 pos = *pPos;
+                    log << "X: " << pos.x << " Y: " << pos.y << std::endl;
+                }
             }
         }
-        Sleep(1000); 
+        log.flush(); // Гарантируем запись каждой строки
+        Sleep(2000); // Читаем редко, чтобы не злить античит
     }
     return 0;
 }
