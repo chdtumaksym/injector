@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <fstream>
 #include <vector>
 #include <string>
 #include <stdint.h>
@@ -12,7 +13,7 @@ namespace offsets {
     constexpr uintptr_t m_iIDEntIndex = 0x1544; 
 }
 
-// 1. Поиск игрока в списке (должен быть в начале)
+// 1. Поиск игрока в списке
 uintptr_t GetEntity(uintptr_t listPtr, int idx) {
     if (!listPtr) return 0;
     uintptr_t list = *reinterpret_cast<uintptr_t*>(listPtr);
@@ -52,48 +53,58 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     return 0;
 }
 
-// 3. Основной поток (Аимбот + Триггербот)
+// 3. Основной поток (Дебаг-логгер)
 DWORD WINAPI CheatThread(LPVOID lpParam) {
+    std::ofstream log("CS2_Debug_Log.txt", std::ios::app);
+    log << "--- NEW SESSION STARTED ---\n";
+    log.flush();
+
+    uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
+    if (!client) {
+        log << "[!] ERROR: client.dll not found!\n"; log.flush();
+        return 0;
+    }
+    log << "[+] Found client.dll at: " << std::hex << client << "\n";
+
     uintptr_t lpAddr = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 4E");
     uintptr_t elAddr = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 40 8B FA C1 EB");
     
-    if (!lpAddr || !elAddr) return 0;
+    if (!lpAddr || !elAddr) {
+        log << "[!] ERROR: Patterns not found (Update required)!\n"; log.flush();
+        return 0;
+    }
+    log << "[+] Patterns found successfully!\n";
 
     uintptr_t lpPtr = lpAddr + 7 + *reinterpret_cast<int32_t*>(lpAddr + 3);
     uintptr_t elPtr = elAddr + 7 + *reinterpret_cast<int32_t*>(elAddr + 3);
 
-    while (true) {
-        uintptr_t local = *reinterpret_cast<uintptr_t*>(lpPtr);
-        if (local) {
-            int myTeam = *reinterpret_cast<int*>(local + offsets::m_iTeamNum);
-            
-            // --- ТРИГГЕРБОТ ---
-            int crossId = *reinterpret_cast<int*>(local + offsets::m_iIDEntIndex);
-            if (crossId > 0 && crossId <= 64) {
-                uintptr_t target = GetEntity(elPtr, crossId - 1);
-                if (target) {
-                    int hp = *reinterpret_cast<int*>(target + offsets::m_iHealth);
-                    int team = *reinterpret_cast<int*>(target + offsets::m_iTeamNum);
-                    if (hp > 0 && hp <= 100 && team != myTeam) {
-                        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-                        Sleep(20);
-                        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-                    }
-                }
-            }
+    log << "[+] Addresses resolved. Starting main loop...\n";
+    log.flush();
 
-            // --- АИМБОТ ---
-            if (GetAsyncKeyState(VK_LBUTTON)) {
-                for (int i = 1; i < 64; i++) {
-                    uintptr_t ent = GetEntity(elPtr, i);
-                    if (!ent || ent == local) continue;
-                    int hp = *reinterpret_cast<int*>(ent + offsets::m_iHealth);
-                    int team = *reinterpret_cast<int*>(ent + offsets::m_iTeamNum);
-                    if (hp > 0 && hp <= 100 && team != myTeam) {
-                        mouse_event(MOUSEEVENTF_MOVE, 3, 0, 0, 0); // Легкая доводка вправо
-                        break;
+    while (true) {
+        uintptr_t localPlayer = *reinterpret_cast<uintptr_t*>(lpPtr);
+
+        if (localPlayer) {
+            int myTeam = *reinterpret_cast<int*>(localPlayer + offsets::m_iTeamNum);
+            int crossId = *reinterpret_cast<int*>(localPlayer + offsets::m_iIDEntIndex);
+
+            // Если кто-то попал в прицел
+            if (crossId > 0 && crossId (target + offsets::m_iHealth);
+                    int team = *reinterpret_cast<int*>(target + offsets::m_iTeamNum);
+                    log << "    - HP: " << hp << " | Team: " << team << " | My Team: " << myTeam << "\n";
+                    
+                    if (hp > 0 && team != myTeam) {
+                        log << "    - ACTION: TRIGGER SHOT!\n";
+                        INPUT input = { 0 };
+                        input.type = INPUT_MOUSE;
+                        input.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+                        SendInput(1, &input, sizeof(INPUT));
+                        Sleep(20);
+                        input.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+                        SendInput(1, &input, sizeof(INPUT));
                     }
                 }
+                log.flush();
             }
         }
         Sleep(1);
