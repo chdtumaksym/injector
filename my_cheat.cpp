@@ -26,7 +26,6 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     };
 
     PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)moduleBase;
-    // ТУТ ИСПРАВЛЕНО: добавил reinterpret_cast
     PIMAGE_NT_HEADERS ntHeaders = reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<BYTE*>(moduleBase) + dosHeader->e_lfanew);
     DWORD sizeOfImage = ntHeaders->OptionalHeader.SizeOfImage;
     auto patternBytes = PatternToBytes(pattern);
@@ -48,21 +47,29 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
 DWORD WINAPI CheatThread(LPVOID lpParam) {
     std::ofstream log("CS2_Pattern_Log.txt", std::ios::app);
     log << "--- Starting Signature Scan ---\n";
+    log.flush();
 
-    // Поиск сигнатуры LocalPlayerPawn
-    uintptr_t address = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 ? 8B 01");
+    // Попытка №1: Стандартная сигнатура для LocalPlayerPawn
+    uintptr_t address = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 4E");
+    
+    // Попытка №2: Если первая не сработала (альтернативный путь)
+    if (!address) {
+        log << "Pattern #1 failed, trying Pattern #2...\n";
+        address = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 40 8B FA");
+    }
 
     if (address) {
-        // Извлекаем относительный адрес из инструкции
+        // Извлекаем относительный адрес (RIP-relative)
         int32_t offset = *reinterpret_cast<int32_t*>(address + 3);
         uintptr_t localPlayerPawnPtr = address + 7 + offset;
         
-        log << "Found LocalPlayerPawn Pointer at: " << std::hex << localPlayerPawnPtr << "\n";
+        log << "Found Pointer at: " << std::hex << localPlayerPawnPtr << "\n";
+        log.flush();
         
         while (true) {
             uintptr_t player = *reinterpret_cast<uintptr_t*>(localPlayerPawnPtr);
             if (player) {
-                // Координаты m_vOldOrigin (обычно 0x127C)
+                // Оффсет m_vOldOrigin из твоего дампа (0x127C)
                 float* coords = reinterpret_cast<float*>(player + 0x127C);
                 log << "X: " << coords[0] << " Y: " << coords[1] << " Z: " << coords[2] << "\n";
                 log.flush();
@@ -70,7 +77,7 @@ DWORD WINAPI CheatThread(LPVOID lpParam) {
             Sleep(1000);
         }
     } else {
-        log << "ERROR: Pattern not found!\n";
+        log << "FATAL ERROR: All patterns failed! Game updated?\n";
         log.flush();
     }
 
