@@ -6,18 +6,18 @@
 struct Vector3 { float x, y, z; };
 
 namespace offsets {
-    constexpr uintptr_t dwViewAngles = 0x11F012C; // Проверь этот оффсет, если не будет наводиться
+    constexpr uintptr_t dwViewAngles = 0x11F012C; 
     constexpr uintptr_t m_vOldOrigin = 0x127C; 
     constexpr uintptr_t m_iHealth = 0x334;
     constexpr uintptr_t m_iTeamNum = 0x3CB;
 }
 
-// Вспомогательные функции (FindPattern и GetEntityByIndex оставляем как были)
+// Поиск паттерна (универсальный)
 uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     uintptr_t moduleBase = (uintptr_t)GetModuleHandleA(moduleName);
     if (!moduleBase) return 0;
     PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)moduleBase;
-    PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)((BYTE*)moduleBase + dos->e_lfanew);
+    PIMAGE_NT_HEADERS nt = reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<BYTE*>(moduleBase) + dos->e_lfanew);
     DWORD size = nt->OptionalHeader.SizeOfImage;
     auto PatternToBytes = [](const char* p) {
         std::vector<int> bytes;
@@ -42,70 +42,74 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
 }
 
 uintptr_t GetEntityByIndex(uintptr_t listPtr, int index) {
-    uintptr_t list = *(uintptr_t*)listPtr;
+    uintptr_t list = *reinterpret_cast<uintptr_t*>(listPtr);
     if (!list) return 0;
-    uintptr_t chunk = *(uintptr_t*)(list + 8 * (index >> 9) + 0x10);
+    uintptr_t chunk = *reinterpret_cast<uintptr_t*>(list + 8 * (index >> 9) + 0x10);
     if (!chunk) return 0;
-    return *(uintptr_t*)(chunk + 0x78 * (index & 0x1FF));
+    return *reinterpret_cast<uintptr_t*>(chunk + 0x78 * (index & 0x1FF));
 }
 
-// Математика для расчета углов
-void CalcAngle(Vector3 src, Vector3 dst, float* angles) {
-    double delta[3] = { (src.x - dst.x), (src.y - dst.y), (src.z - dst.z) };
-    double hyp = sqrt(delta[0] * delta[0] + delta[1] * delta[1]);
-    angles[0] = (float)(asinf(delta[2] / hyp) * 57.295779513082f);
-    angles[1] = (float)(atanf(delta[1] / delta[0]) * 57.295779513082f);
-    angles[2] = 0.0f;
-    if (delta[0] >= 0.0) angles[1] += 180.0f;
+// Математика углов
+void CalcAngle(Vector3 src, Vector3 dst, float* aimAngles) {
+    float delta[3] = { (dst.x - src.x), (dst.y - src.y), (dst.z - src.z) };
+    float hyp = sqrt(delta[0] * delta[0] + delta[1] * delta[1]);
+    aimAngles[0] = (float)(atan2(-delta[2], hyp) * 57.2957795f);
+    aimAngles[1] = (float)(atan2(delta[1], delta[0]) * 57.2957795f);
 }
 
-DWORD WINAPI AimThread(LPVOID lpParam) {
+DWORD WINAPI FullAutoFarmThread(LPVOID lpParam) {
     uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
     uintptr_t lpAddr = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 4E");
     uintptr_t elAddr = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 40 8B FA C1 EB");
     
-    uintptr_t lpPtr = lpAddr + 7 + *(int32_t*)(lpAddr + 3);
-    uintptr_t elPtr = elAddr + 7 + *(int32_t*)(elAddr + 3);
+    if (!lpAddr || !elAddr) return 0;
+
+    uintptr_t lpPtr = lpAddr + 7 + *reinterpret_cast<int32_t*>(lpAddr + 3);
+    uintptr_t elPtr = elAddr + 7 + *reinterpret_cast<int32_t*>(elAddr + 3);
 
     while (true) {
-        if (GetAsyncKeyState(VK_LBUTTON)) { // Аим на левую кнопку
-            uintptr_t local = *(uintptr_t*)lpPtr;
-            if (!local) continue;
+        // УБРАЛИ GetAsyncKeyState — теперь бот работает САМ ВСЕГДА
+        uintptr_t local = *reinterpret_cast<uintptr_t*>(lpPtr);
+        if (!local) { Sleep(100); continue; }
 
-            Vector3 myPos = *(Vector3*)(local + offsets::m_vOldOrigin);
-            int myTeam = *(int*)(local + offsets::m_iTeamNum);
-            float* myAngles = (float*)(client + offsets::dwViewAngles);
+        Vector3 myPos = *reinterpret_cast<Vector3*>(local + offsets::m_vOldOrigin);
+        int myTeam = *reinterpret_cast<int*>(local + offsets::m_iTeamNum);
+        float* myAngles = reinterpret_cast<float*>(client + offsets::dwViewAngles);
 
-            for (int i = 1; i < 64; i++) {
-                uintptr_t ent = GetEntityByIndex(elPtr, i);
-                if (!ent || ent == local) continue;
-                if (*(int*)(ent + offsets::m_iHealth) <= 0 || *(int*)(ent + offsets::m_iTeamNum) == myTeam) continue;
+        for (int i = 1; i < 64; i++) {
+            uintptr_t ent = GetEntityByIndex(elPtr, i);
+            if (!ent || ent == local) continue;
+            if (*reinterpret_cast<int*>(ent + offsets::m_iHealth) <= 0 || *reinterpret_cast<int*>(ent + offsets::m_iTeamNum) == myTeam) continue;
 
-                Vector3 targetPos = *(Vector3*)(ent + offsets::m_vOldOrigin);
-                targetPos.z += 60.0f; // Наводимся на голову (чуть выше центра)
+            Vector3 targetPos = *reinterpret_cast<Vector3*>(ent + offsets::m_vOldOrigin);
+            targetPos.z += 55.0f; // Целимся в голову
 
-                float angles[3];
-                CalcAngle(myPos, targetPos, angles);
+            float aimAngles[2];
+            CalcAngle(myPos, targetPos, aimAngles);
 
-                // Рассчитываем разницу в пикселях (упрощенно)
-                float diffYaw = myAngles[1] - angles[1];
-                if (diffYaw > 180) diffYaw -= 360;
-                if (diffYaw < -180) diffYaw += 360;
+            float diffYaw = myAngles[1] - aimAngles[1];
+            if (diffYaw > 180) diffYaw -= 360;
+            if (diffYaw < -180) diffYaw += 360;
 
-                // Если разница больше 1 градуса — двигаем мышь
-                if (abs(diffYaw) > 0.5f) {
-                    int moveX = (diffYaw > 0) ? -3 : 3; // Скорость доводки
-                    mouse_event(MOUSEEVENTF_MOVE, moveX, 0, 0, 0);
-                }
-                break; 
+            // 1. Быстрая доводка
+            if (abs(diffYaw) > 0.5f) {
+                int moveX = (diffYaw > 0) ? -6 : 6; // Увеличил скорость для фарма
+                mouse_event(MOUSEEVENTF_MOVE, moveX, 0, 0, 0);
+            } 
+            // 2. Моментальный выстрел
+            else {
+                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+                Sleep(10);
+                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
             }
+            break; 
         }
-        Sleep(5);
+        Sleep(1); // Максимальная скорость цикла
     }
     return 0;
 }
 
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
-    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, AimThread, 0, 0, 0));
+    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, FullAutoFarmThread, 0, 0, 0));
     return TRUE;
 }
