@@ -2,6 +2,7 @@
 #include <fstream>
 #include <vector>
 #include <string>
+#include <stdint.h>
 
 // --- Продвинутый поиск сигнатур ---
 uintptr_t FindPattern(const char* moduleName, const char* pattern) {
@@ -18,14 +19,15 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
                 if (*current == '?') current++;
                 bytes.push_back(-1);
             } else {
-                bytes.push_back(strtoul(current, &current, 16));
+                bytes.push_back((int)strtoul(current, &current, 16));
             }
         }
         return bytes;
     };
 
     PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)moduleBase;
-    PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS*)(moduleBase + dosHeader->e_lfanew);
+    // ТУТ ИСПРАВЛЕНО: добавил reinterpret_cast
+    PIMAGE_NT_HEADERS ntHeaders = reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<BYTE*>(moduleBase) + dosHeader->e_lfanew);
     DWORD sizeOfImage = ntHeaders->OptionalHeader.SizeOfImage;
     auto patternBytes = PatternToBytes(pattern);
     BYTE* scanStart = (BYTE*)moduleBase;
@@ -33,7 +35,7 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     for (DWORD i = 0; i < sizeOfImage - patternBytes.size(); ++i) {
         bool found = true;
         for (size_t j = 0; j < patternBytes.size(); ++j) {
-            if (patternBytes[j] != -1 && scanStart[i + j] != patternBytes[j]) {
+            if (patternBytes[j] != -1 && scanStart[i + j] != (BYTE)patternBytes[j]) {
                 found = false;
                 break;
             }
@@ -47,22 +49,21 @@ DWORD WINAPI CheatThread(LPVOID lpParam) {
     std::ofstream log("CS2_Pattern_Log.txt", std::ios::app);
     log << "--- Starting Signature Scan ---\n";
 
-    // Ищем сигнатуру для LocalPlayerPawn
-    // Это стандартный паттерн: 48 8B 0D ? ? ? ? 48 85 C9 74 ? 8B 01
+    // Поиск сигнатуры LocalPlayerPawn
     uintptr_t address = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 ? 8B 01");
 
     if (address) {
-        // Извлекаем адрес из инструкции MOV RCX, [RIP + offset]
-        int32_t offset = *(int32_t*)(address + 3);
-        uintptr_t localPlayerPawn = address + 7 + offset;
+        // Извлекаем относительный адрес из инструкции
+        int32_t offset = *reinterpret_cast<int32_t*>(address + 3);
+        uintptr_t localPlayerPawnPtr = address + 7 + offset;
         
-        log << "Found LocalPlayerPawn at: " << std::hex << localPlayerPawn << "\n";
+        log << "Found LocalPlayerPawn Pointer at: " << std::hex << localPlayerPawnPtr << "\n";
         
         while (true) {
-            uintptr_t player = *(uintptr_t*)localPlayerPawn;
+            uintptr_t player = *reinterpret_cast<uintptr_t*>(localPlayerPawnPtr);
             if (player) {
-                // Оффсет координат m_vOldOrigin обычно стабилен (0x127C)
-                float* coords = (float*)(player + 0x127C);
+                // Координаты m_vOldOrigin (обычно 0x127C)
+                float* coords = reinterpret_cast<float*>(player + 0x127C);
                 log << "X: " << coords[0] << " Y: " << coords[1] << " Z: " << coords[2] << "\n";
                 log.flush();
             }
@@ -70,12 +71,16 @@ DWORD WINAPI CheatThread(LPVOID lpParam) {
         }
     } else {
         log << "ERROR: Pattern not found!\n";
+        log.flush();
     }
 
     return 0;
 }
 
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
-    if (r == DLL_PROCESS_ATTACH) CreateThread(0, 0, CheatThread, 0, 0, 0);
+    if (r == DLL_PROCESS_ATTACH) {
+        HANDLE hThread = CreateThread(0, 0, CheatThread, 0, 0, 0);
+        if (hThread) CloseHandle(hThread);
+    }
     return TRUE;
 }
