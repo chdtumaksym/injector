@@ -13,7 +13,7 @@ namespace offsets {
 
 struct Vector3 { float x, y, z; };
 
-// --- Функция поиска паттерна ---
+// --- 1. Функция поиска паттерна ---
 uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     uintptr_t moduleBase = (uintptr_t)GetModuleHandleA(moduleName);
     if (!moduleBase) return 0;
@@ -21,7 +21,7 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     auto PatternToBytes = [](const char* pattern) {
         std::vector<int> bytes;
         char* start = const_cast<char*>(pattern);
-        char* end = const_cast<char*>(pattern) + (int)strlen(pattern);
+        char* end = const_cast<char*>(pattern) + strlen(pattern);
         for (char* current = start; current < end; ++current) {
             if (*current == '?') {
                 current++; if (*current == '?') current++;
@@ -48,7 +48,7 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     return *reinterpret_cast<uintptr_t*>(chunk + 0x78 * (index & 0x1FF));
 }
 
-// --- Основной поток чита ---
+// --- 3. Основной поток чита ---
 DWORD WINAPI CheatThread(LPVOID lpParam) {
     std::ofstream log("CS2_Entity_Log.txt", std::ios::app);
     log << "--- Start Scanning ---\n";
@@ -89,9 +89,10 @@ DWORD WINAPI CheatThread(LPVOID lpParam) {
     return 0;
 }
 
+// --- 4. Точка входа ---
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
     if (r == DLL_PROCESS_ATTACH) {
-        HANDLE hThread = CreateThread(0, 0, CheatThread, 0, 0, 0);
+        HANDLE hThread = CreateThread(0, 0, (LPTHREAD_START_ROUTINE)CheatThread, 0, 0, 0);
         if (hThread) CloseHandle(hThread);
     }
     return TRUE;
