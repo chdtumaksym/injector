@@ -12,10 +12,23 @@ namespace offsets {
     constexpr uintptr_t m_iIDEntIndex = 0x1544; 
 }
 
-// --- 1. ТЕЛО ФУНКЦИИ FindPattern ---
+// --- 1. Функция получения сущности по индексу (ПЕРЕНЕСЕНА ВВЕРХ) ---
+uintptr_t GetEntityByIndex(uintptr_t entityListPtr, int index) {
+    if (!entityListPtr) return 0;
+    uintptr_t entityList = *reinterpret_cast<uintptr_t*>(entityListPtr);
+    if (!entityList) return 0;
+
+    uintptr_t chunk = *reinterpret_cast<uintptr_t*>(entityList + 0x8 * (static_cast<uintptr_t>(index) >> 9) + 0x10);
+    if (!chunk) return 0;
+
+    return *reinterpret_cast<uintptr_t*>(chunk + 0x78 * (static_cast<uintptr_t>(index) & 0x1FF));
+}
+
+// --- 2. Функция поиска паттерна ---
 uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     uintptr_t moduleBase = (uintptr_t)GetModuleHandleA(moduleName);
     if (!moduleBase) return 0;
+    
     auto PatternToBytes = [](const char* p) {
         std::vector<int> bytes;
         char* start = const_cast<char*>(p);
@@ -26,40 +39,44 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
         }
         return bytes;
     };
+
     PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)moduleBase;
-    PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)((BYTE*)moduleBase + dos->e_lfanew);
+    PIMAGE_NT_HEADERS nt = reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<BYTE*>(moduleBase) + dos->e_lfanew);
     DWORD size = nt->OptionalHeader.SizeOfImage;
     auto patternBytes = PatternToBytes(pattern);
     BYTE* scanStart = (BYTE*)moduleBase;
-    for (DWORD i = 0; i (entityListPtr);
-    if (!entityList) return 0;
-    uintptr_t chunk = *reinterpret_cast<uintptr_t*>(entityList + 0x8 * (index >> 9) + 0x10);
-    if (!chunk) return 0;
-    return *reinterpret_cast<uintptr_t*>(chunk + 0x78 * (index & 0x1FF));
+
+    for (DWORD i = 0; i < size - static_cast<DWORD>(patternBytes.size()); ++i) {
+        bool found = true;
+        for (size_t j = 0; j < patternBytes.size(); ++j) {
+            if (patternBytes[j] != -1 && scanStart[i + j] != static_cast<BYTE>(patternBytes[j])) { found = false; break; }
+        }
+        if (found) return reinterpret_cast<uintptr_t>(scanStart + i);
+    }
+    return 0;
 }
 
-// --- 3. ПОТОК ТРИГГЕРБОТА И АИМА ---
+// --- 3. Основной поток чита ---
 DWORD WINAPI SimpleFarmThread(LPVOID lpParam) {
-    uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
+    uintptr_t client = reinterpret_cast<uintptr_t>(GetModuleHandleA("client.dll"));
+    if (!client) return 0;
+
     uintptr_t lpAddr = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 4E");
     uintptr_t elAddr = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 40 8B FA C1 EB");
     
     if (!lpAddr || !elAddr) return 0;
 
-    uintptr_t lpPtr = lpAddr + 7 + *reinterpret_cast<int32_t*>(lpAddr + 3);
-    uintptr_t elPtr = elAddr + 7 + *reinterpret_cast<int32_t*>(elAddr + 3);
+    uintptr_t localPlayerPtr = lpAddr + 7 + *reinterpret_cast<int32_t*>(lpAddr + 3);
+    uintptr_t entityListPtr = elAddr + 7 + *reinterpret_cast<int32_t*>(elAddr + 3);
 
     while (true) {
-        uintptr_t local = *reinterpret_cast<uintptr_t*>(lpPtr);
+        uintptr_t local = *reinterpret_cast<uintptr_t*>(localPlayerPtr);
         if (local) {
             int myTeam = *reinterpret_cast<int*>(local + offsets::m_iTeamNum);
             
-            // ТРИГГЕРБОТ: Авто-выстрел при наведении
+            // ТРИГГЕРБОТ
             int crosshairId = *reinterpret_cast<int*>(local + offsets::m_iIDEntIndex);
-            if (crosshairId > 0 && crosshairId <= 64) {
-                uintptr_t target = GetEntityByIndex(elPtr, crosshairId - 1);
-                if (target) {
-                    int targetTeam = *reinterpret_cast<int*>(target + offsets::m_iTeamNum);
+            if (crosshairId > 0 && crosshairId (target + offsets::m_iTeamNum);
                     int health = *reinterpret_cast<int*>(target + offsets::m_iHealth);
                     if (targetTeam != myTeam && health > 0) {
                         mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
@@ -76,7 +93,8 @@ DWORD WINAPI SimpleFarmThread(LPVOID lpParam) {
 
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
     if (r == DLL_PROCESS_ATTACH) {
-        CloseHandle(CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)SimpleFarmThread, nullptr, 0, nullptr));
+        HANDLE hThread = CreateThread(nullptr, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(SimpleFarmThread), nullptr, 0, nullptr);
+        if (hThread) CloseHandle(hThread);
     }
     return TRUE;
 }
