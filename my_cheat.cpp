@@ -6,7 +6,7 @@
 DWORD WINAPI HackThread(LPVOID lpParam) {
     // 1. Пытаемся создать файл-подтверждение на диске C или в папке пользователя
     // Используем относительный путь, чтобы точно были права на запись
-    std::ofstream out("C:\\Bypass_Success.txt"); 
+    std::ofstream out("Bypass_Success.txt");; 
     if (!out.is_open()) {
         // Если диск C закрыт, пробуем создать на рабочем столе (примерный путь)
         out.open("Bypass_Success_Alt.txt");
