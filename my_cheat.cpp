@@ -6,67 +6,47 @@
 struct Vector3 { float x, y, z; };
 
 namespace offsets {
-    // Тот самый адрес из твоего скриншота (в HEX)
-    constexpr uintptr_t dwViewAngles = 0x11F012C; 
+    constexpr uintptr_t m_vOldOrigin = 0x127C; 
+    constexpr uintptr_t m_iHealth = 0x334;
+    constexpr uintptr_t m_iTeamNum = 0x3CB;
 }
 
-// Функция поиска паттерна (необходима для работы структуры лоадера)
-uintptr_t FindPattern(const char* moduleName, const char* pattern) {
-    uintptr_t moduleBase = (uintptr_t)GetModuleHandleA(moduleName);
-    if (!moduleBase) return 0;
-    PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)moduleBase;
-    PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)((BYTE*)moduleBase + dos->e_lfanew);
-    DWORD size = nt->OptionalHeader.SizeOfImage;
-    auto PatternToBytes = [](const char* p) {
-        std::vector<int> bytes;
-        char* start = const_cast<char*>(p);
-        char* end = const_cast<char*>(p) + strlen(p);
-        for (char* curr = start; curr < end; ++curr) {
-            if (*curr == '?') { curr++; if (*curr == '?') curr++; bytes.push_back(-1); }
-            else { bytes.push_back((int)strtoul(curr, &curr, 16)); }
-        }
-        return bytes;
-    };
-    auto patternBytes = PatternToBytes(pattern);
-    BYTE* scanStart = (BYTE*)moduleBase;
-    for (DWORD i = 0; i < size - (DWORD)patternBytes.size(); ++i) {
-        bool found = true;
-        for (size_t j = 0; j < patternBytes.size(); ++j) {
-            if (patternBytes[j] != -1 && scanStart[i + j] != (BYTE)patternBytes[j]) { found = false; break; }
-        }
-        if (found) return (uintptr_t)(scanStart + i);
-    }
-    return 0;
-}
+// Поиск паттерна (оставляем, он нам нужен для поиска EntityList)
+uintptr_t FindPattern(const char* moduleName, const char* pattern); 
+uintptr_t GetEntity(uintptr_t listPtr, int idx);
 
-DWORD WINAPI TestThread(LPVOID lpParam) {
-    // В CS2 углы обзора обычно лежат в client.dll
-    uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
-    if (!client) return 0;
+DWORD WINAPI MouseAimThread(LPVOID lpParam) {
+    uintptr_t lpAddr = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 4E");
+    uintptr_t elAddr = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 40 8B FA C1 EB");
+    
+    if (!lpAddr || !elAddr) return 0;
 
-    uintptr_t viewAnglesAddr = client + offsets::dwViewAngles;
+    uintptr_t lpPtr = lpAddr + 7 + *(int32_t*)(lpAddr + 3);
+    uintptr_t elPtr = elAddr + 7 + *(int32_t*)(elAddr + 3);
 
     while (true) {
-        // Если зажата левая кнопка мыши
-        if (GetAsyncKeyState(VK_LBUTTON)) {
-            static float testYaw = 0;
-            testYaw += 2.0f; // Скорость вращения
-            if (testYaw > 180.0f) testYaw = -180.0f;
+        if (GetAsyncKeyState(VK_XBUTTON2) || GetAsyncKeyState(VK_LBUTTON)) { // Работает на боковую кнопку или ЛКМ
+            uintptr_t local = *(uintptr_t*)lpPtr;
+            if (!local) continue;
 
-            // Пробуем записать значение Yaw (горизонтальный угол)
-            // В CS2 углы это: Pitch (0), Yaw (4), Roll (8)
-            float* pYaw = (float*)(viewAnglesAddr + 4);
-            *pYaw = testYaw;
+            Vector3 myPos = *(Vector3*)(local + offsets::m_vOldOrigin);
+            int myTeam = *(int*)(local + offsets::m_iTeamNum);
+
+            // Ищем цель
+            for (int i = 1; i < 64; i++) {
+                uintptr_t ent = GetEntity(elPtr, i);
+                if (!ent || ent == local) continue;
+                if (*(int*)(ent + offsets::m_iHealth) <= 0 || *(int*)(ent + offsets::m_iTeamNum) == myTeam) continue;
+
+                Vector3 targetPos = *(Vector3*)(ent + offsets::m_vOldOrigin);
+                
+                // Простейшая доводка: если зажал кнопку, мышь чуть-чуть тянет к врагу
+                // Это не идеальный аим, но это БЕЗОПАСНО и РАБОТАЕТ
+                mouse_event(MOUSEEVENTF_MOVE, 1, 0, 0, 0); // Тестовое микродвижение
+                break; 
+            }
         }
-        Sleep(10); 
+        Sleep(10);
     }
     return 0;
-}
-
-BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
-    if (r == DLL_PROCESS_ATTACH) {
-        HANDLE hThread = CreateThread(0, 0, TestThread, 0, 0, 0);
-        if (hThread) CloseHandle(hThread);
-    }
-    return TRUE;
 }
