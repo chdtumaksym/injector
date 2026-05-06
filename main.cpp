@@ -77,6 +77,9 @@ DWORD GetTargetThreadID(DWORD pid) {
     if (Thread32First(hSnap, &te32)) {
         do {
             if (te32.th32OwnerProcessID == pid) {
+                // Пытаемся не брать самый первый поток, берем второй или третий для стабильности
+                static int skip = 0;
+                if (skip++ < 1) continue; 
                 CloseHandle(hSnap); return te32.th32ThreadID;
             }
         } while (Thread32Next(hSnap, &te32));
@@ -90,6 +93,7 @@ bool ManualMapDLL(HANDLE hProcess, const std::vector<char>& buffer) {
     auto* dosHeader = (IMAGE_DOS_HEADER*)buffer.data();
     auto* ntHeaders = (IMAGE_NT_HEADERS*)(buffer.data() + dosHeader->e_lfanew);
 
+    // Используем более скрытные права доступа
     LPVOID remoteBase = VirtualAllocEx(hProcess, nullptr, ntHeaders->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     WriteProcessMemory(hProcess, remoteBase, buffer.data(), ntHeaders->OptionalHeader.SizeOfHeaders, nullptr);
     
@@ -103,12 +107,13 @@ bool ManualMapDLL(HANDLE hProcess, const std::vector<char>& buffer) {
     data.pGetProcAddress = GetProcAddress;
     data.pBase = (BYTE*)remoteBase;
 
-    SIZE_T shellSize = 4096; // Фиксированный размер для стабильности
+    SIZE_T shellSize = 4096; 
     LPVOID remoteShell = VirtualAllocEx(hProcess, nullptr, shellSize + sizeof(data), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     LPVOID remoteStruct = (BYTE*)remoteShell + shellSize;
 
     DWORD tid = GetTargetThreadID(GetProcessId(hProcess));
-    HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, tid);
+    // Открываем поток с ограниченными правами
+    HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, tid);
     SuspendThread(hThread);
 
     CONTEXT ctx = { CONTEXT_CONTROL };
@@ -122,7 +127,7 @@ bool ManualMapDLL(HANDLE hProcess, const std::vector<char>& buffer) {
     SetThreadContext(hThread, &ctx);
     ResumeThread(hThread);
 
-    Sleep(2000); // Даем время на выполнение
+    Sleep(1500); 
     
     CloseHandle(hThread);
     return true;
@@ -133,16 +138,18 @@ int main() {
     std::cout << "Target PID: "; std::cin >> pid;
     
     std::ifstream file("my_cheat.dll", std::ios::binary | std::ios::ate);
-    if (!file.is_open()) { std::cout << "DLL NOT FOUND!"; return 1; }
+    if (!file.is_open()) { std::cout << "DLL NOT FOUND!"; Sleep(3000); return 1; }
     
     std::streamsize size = file.tellg();
     file.seekg(0, std::ios::beg);
     std::vector<char> buffer(size);
     file.read(buffer.data(), size);
 
-    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-    if (hProcess && ManualMapDLL(hProcess, buffer)) std::cout << "DONE!";
-    else std::cout << "ERROR!";
+    // Не просим ALL_ACCESS — это слишком палевно
+    HANDLE hProcess = OpenProcess(PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION, FALSE, pid);
+    
+    if (hProcess && ManualMapDLL(hProcess, buffer)) std::cout << "INJECTION DONE!";
+    else std::cout << "ERROR IN OPENING PROCESS!";
     
     if (hProcess) CloseHandle(hProcess);
     Sleep(3000);
