@@ -12,7 +12,7 @@ namespace offsets {
     constexpr uintptr_t m_iIDEntIndex = 0x1544; 
 }
 
-// --- 1. Функция получения сущности по индексу (ПЕРЕНЕСЕНА ВВЕРХ) ---
+// --- 1. Сначала объявляем функцию получения сущности ---
 uintptr_t GetEntityByIndex(uintptr_t entityListPtr, int index) {
     if (!entityListPtr) return 0;
     uintptr_t entityList = *reinterpret_cast<uintptr_t*>(entityListPtr);
@@ -24,18 +24,22 @@ uintptr_t GetEntityByIndex(uintptr_t entityListPtr, int index) {
     return *reinterpret_cast<uintptr_t*>(chunk + 0x78 * (static_cast<uintptr_t>(index) & 0x1FF));
 }
 
-// --- 2. Функция поиска паттерна ---
+// --- 2. Затем функцию поиска паттерна ---
 uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     uintptr_t moduleBase = (uintptr_t)GetModuleHandleA(moduleName);
     if (!moduleBase) return 0;
-    
+
     auto PatternToBytes = [](const char* p) {
         std::vector<int> bytes;
         char* start = const_cast<char*>(p);
         char* end = const_cast<char*>(p) + strlen(p);
         for (char* curr = start; curr < end; ++curr) {
-            if (*curr == '?') { curr++; if (*curr == '?') curr++; bytes.push_back(-1); }
-            else { bytes.push_back((int)strtoul(curr, &curr, 16)); }
+            if (*curr == '?') {
+                curr++; if (*curr == '?') curr++;
+                bytes.push_back(-1);
+            } else {
+                bytes.push_back((int)strtoul(curr, &curr, 16));
+            }
         }
         return bytes;
     };
@@ -49,14 +53,16 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     for (DWORD i = 0; i < size - static_cast<DWORD>(patternBytes.size()); ++i) {
         bool found = true;
         for (size_t j = 0; j < patternBytes.size(); ++j) {
-            if (patternBytes[j] != -1 && scanStart[i + j] != static_cast<BYTE>(patternBytes[j])) { found = false; break; }
+            if (patternBytes[j] != -1 && scanStart[i + j] != static_cast<BYTE>(patternBytes[j])) {
+                found = false; break;
+            }
         }
         if (found) return reinterpret_cast<uintptr_t>(scanStart + i);
     }
     return 0;
 }
 
-// --- 3. Основной поток чита ---
+// --- 3. И только потом основной поток ---
 DWORD WINAPI SimpleFarmThread(LPVOID lpParam) {
     uintptr_t client = reinterpret_cast<uintptr_t>(GetModuleHandleA("client.dll"));
     if (!client) return 0;
@@ -73,12 +79,12 @@ DWORD WINAPI SimpleFarmThread(LPVOID lpParam) {
         uintptr_t local = *reinterpret_cast<uintptr_t*>(localPlayerPtr);
         if (local) {
             int myTeam = *reinterpret_cast<int*>(local + offsets::m_iTeamNum);
-            
-            // ТРИГГЕРБОТ
             int crosshairId = *reinterpret_cast<int*>(local + offsets::m_iIDEntIndex);
+
             if (crosshairId > 0 && crosshairId (target + offsets::m_iTeamNum);
                     int health = *reinterpret_cast<int*>(target + offsets::m_iHealth);
-                    if (targetTeam != myTeam && health > 0) {
+                    
+                    if (targetTeam != myTeam && health > 0 && health <= 100) {
                         mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
                         Sleep(20);
                         mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
@@ -93,7 +99,7 @@ DWORD WINAPI SimpleFarmThread(LPVOID lpParam) {
 
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
     if (r == DLL_PROCESS_ATTACH) {
-        HANDLE hThread = CreateThread(nullptr, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(SimpleFarmThread), nullptr, 0, nullptr);
+        HANDLE hThread = CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)SimpleFarmThread, nullptr, 0, nullptr);
         if (hThread) CloseHandle(hThread);
     }
     return TRUE;
