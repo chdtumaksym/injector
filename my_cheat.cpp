@@ -1,60 +1,52 @@
 #include <windows.h>
 #include <fstream>
-#include <iostream>
+#include <string>
 
-// --- АКТУАЛЬНЫЕ ОФФСЕТЫ ИЗ ВАШЕГО ДАМПА ---
-namespace offsets {
-    // Из раздела "client.dll" -> "classes"
-    // Мы берем смещения для поиска игрока и его координат
-    constexpr uintptr_t dwLocalPlayerPawn = 0x1824A18; // Смещение до локального игрока в client.dll
-    constexpr uintptr_t m_vOldOrigin = 0x127C;        // Смещение координат внутри C_BasePlayerPawn
-    constexpr uintptr_t m_iHealth = 0x334;            // Смещение здоровья (для проверки)
-}
-
+// Структура координат
 struct Vector3 { float x, y, z; };
 
+namespace offsets {
+    // ВНИМАНИЕ: Проверь эти значения в своем JSON файле (раздел "offsets")
+    constexpr uintptr_t dwLocalPlayerPawn = 0x1824A18; 
+    constexpr uintptr_t m_vOldOrigin = 0x127C; 
+}
+
 DWORD WINAPI AnalyzeThread(LPVOID lpParam) {
-    // Ждем, пока игра загрузится полностью
-    uintptr_t clientModule = 0;
+    uintptr_t clientModule = (uintptr_t)GetModuleHandleA("client.dll");
     while (!clientModule) {
-        clientModule = (uintptr_t)GetModuleHandleA("client.dll");
         Sleep(500);
+        clientModule = (uintptr_t)GetModuleHandleA("client.dll");
     }
 
-    std::ofstream log("cs2_coordinates_log.txt", std::ios::app);
-    log << "--- Start Logging Session ---\n";
-    
+    // Создаем файл на диске C, чтобы точно его найти
+    std::ofstream log("C:\\cs2_test_log.txt", std::ios::app);
+    log << "Started\n";
+
     while (true) {
-        // 1. Безопасное чтение указателя на локального игрока
-        uintptr_t localPlayer = 0;
-        if (clientModule + offsets::dwLocalPlayerPawn) {
-            localPlayer = *(uintptr_t*)(clientModule + offsets::dwLocalPlayerPawn);
-        }
-        
-        if (localPlayer) {
-            // 2. Читаем координаты и здоровье
-            // Мы используем прямой доступ к памяти, так как мы внутри процесса (Internal)
-            Vector3 coords = *(Vector3*)(localPlayer + offsets::m_vOldOrigin);
-            int health = *(int*)(localPlayer + offsets::m_iHealth);
+        // Безопасная проверка: не читаем, если указатель на модуль битый
+        if (clientModule) {
+            uintptr_t localPlayerPawn = *(uintptr_t*)(clientModule + offsets::dwLocalPlayerPawn);
             
-            // 3. Записываем данные в файл
-            if (health > 0) { // Логируем только если игрок живой
-                log << "Health: " << health << " | Pos: " 
-                    << coords.x << ", " << coords.y << ", " << coords.z << std::endl;
-                log.flush();
+            // Если игрок заспавнился и указатель не нулевой
+            if (localPlayerPawn != 0) {
+                // Используем SEH (__try/__except) или простые проверки, чтобы не вылетать
+                __try {
+                    Vector3 pos = *(Vector3*)(localPlayerPawn + offsets::m_vOldOrigin);
+                    log << "X: " << pos.x << " Y: " << pos.y << " Z: " << pos.z << std::endl;
+                    log.flush();
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    // Если адрес оказался битым, мы просто игнорируем ошибку и не вылетаем
+                }
             }
         }
-
-        Sleep(1000); // Читаем данные раз в секунду
+        Sleep(1000);
     }
     return 0;
 }
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     if (reason == DLL_PROCESS_ATTACH) {
-        // Запускаем наш поток анализа отдельно от основного потока игры
-        HANDLE hThread = CreateThread(NULL, 0, AnalyzeThread, NULL, 0, NULL);
-        if (hThread) CloseHandle(hThread);
+        CreateThread(NULL, 0, AnalyzeThread, NULL, 0, NULL);
     }
     return TRUE;
 }
