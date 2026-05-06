@@ -1,16 +1,24 @@
 #include <windows.h>
+#include <fstream>
 
-// Эта функция вызывается автоматически сразу после маппинга
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
-    switch (ul_reason_for_call) {
-    case DLL_PROCESS_ATTACH:
-        // Создаем отдельный поток для нашего кода, чтобы не вешать основной поток игры
-        // Но для первого теста можно просто вывести MessageBox прямо здесь
-        MessageBoxA(NULL, "Injection Successful!\nManual Mapping: OK\nThread Hijacking: OK", "Bypass Test", MB_OK | MB_ICONINFORMATION);
-        break;
+// Функция, которая будет работать в отдельном потоке
+DWORD WINAPI HackThread(LPVOID lpParam) {
+    // Пробуем создать файл на диске C (или смени на D:\success.txt, если С закрыт)
+    std::ofstream out("C:\\bypass_test.txt");
+    if (out.is_open()) {
+        out << "Manual Mapping + Thread Hijacking: SUCCESS!";
+        out.close();
+    }
+    
+    // Пытаемся все же показать окно, но уже из отдельного потока
+    MessageBoxA(NULL, "DLL is running inside target process!", "Victory", MB_OK);
+    return 0;
+}
 
-    case DLL_PROCESS_DETACH:
-        break;
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
+    if (reason == DLL_PROCESS_ATTACH) {
+        // Создаем поток, чтобы не вешать игру/блокнот
+        CreateThread(NULL, 0, HackThread, NULL, 0, NULL);
     }
     return TRUE;
 }
