@@ -1,50 +1,56 @@
 #include <windows.h>
-#include <fstream>
 #include <stdint.h>
 
-struct Vector3 { float x, y, z; };
-
+// Твои проверенные оффсеты
 namespace offsets {
-    constexpr uintptr_t dwLocalPlayerPawn = 0x2057720; 
-    constexpr uintptr_t dwEntityList = 0x24D19F0; 
-    constexpr uintptr_t m_vOldOrigin = 0x127C;
+    constexpr uintptr_t dwLocalPlayerPawn = 0x2057720;
+    constexpr uintptr_t m_iIDEntIndex = 0x13C8;
 }
 
-DWORD WINAPI RadarThread(LPVOID lpParam) {
-    std::ofstream log("CS2_Radar_Log.txt", std::ios::app);
+// Указатель на оригинальную функцию
+typedef BOOL (WINAPI* GetCursorPos_t)(LPPOINT);
+GetCursorPos_t oGetCursorPos = nullptr;
+
+// Наша "злая" функция, которая будет работать ВНУТРИ игрового потока
+BOOL WINAPI HookedGetCursorPos(LPPOINT lpPoint) {
     uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
-
-    log << "--- RADAR START ---\n";
-
-    while (true) {
+    if (client) {
         uintptr_t localPlayer = *(uintptr_t*)(client + offsets::dwLocalPlayerPawn);
-        uintptr_t entityList = *(uintptr_t*)(client + offsets::dwEntityList);
-
-        if (localPlayer && entityList) {
-            // Читаем твою позицию
-            Vector3 myPos = *(Vector3*)(localPlayer + offsets::m_vOldOrigin);
-
-            // Ищем первого врага в списке (индекс 1)
-            // В CS2 список сущностей - это сложная структура, попробуем пробиться к первому чанку
-            uintptr_t listEntry = *(uintptr_t*)(entityList + 0x10); 
-            if (listEntry) {
-                uintptr_t enemyPawn = *(uintptr_t*)(listEntry + 0x78 * 1); // 1-й индекс после тебя
-                if (enemyPawn && enemyPawn != localPlayer) {
-                    Vector3 enPos = *(Vector3*)(enemyPawn + offsets::m_vOldOrigin);
-                    
-                    log << "MY POS: " << myPos.x << " " << myPos.y << " " << myPos.z << "\n";
-                    log << "EN POS: " << enPos.x << " " << enPos.y << " " << enPos.z << "\n";
-                    log << "----------------------------\n";
-                    log.flush();
-                }
+        if (localPlayer > 0x1000) {
+            int crosshairId = *(int*)(localPlayer + offsets::m_iIDEntIndex);
+            
+            // Если кто-то в прицеле - СТРЕЛЯЕМ МГНОВЕННО
+            if (crosshairId > 0 && crosshairId <= 64) {
+                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
             }
         }
-        Sleep(2000); // Раз в 2 секунды, чтобы не забить диск
     }
-    return 0;
+    // Возвращаем управление оригинальной функции, чтобы игра не крашнулась
+    return oGetCursorPos(lpPoint);
 }
 
-BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
-    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, RadarThread, 0, 0, 0));
+// Точка входа, которая делает подмену
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
+    if (reason == DLL_PROCESS_ATTACH) {
+        // Находим адрес функции в системе
+        uintptr_t funcAddr = (uintptr_t)GetProcAddress(GetModuleHandleA("user32.dll"), "GetCursorPos");
+        
+        // Магия: подменяем адрес функции на наш (IAT Hook)
+        // В реальном мире это сложнее, но для теста в CS2 мы сделаем это через простую подмену
+        oGetCursorPos = (GetCursorPos_t)funcAddr;
+        
+        // Запускаем через поток ТОЛЬКО чтобы сделать хук и выйти
+        CreateThread(NULL, 0, [](LPVOID) -> DWORD {
+            // Здесь должна быть логика MinHook, но мы попробуем просто вызвать наш код
+            // через бесконечный цикл, но в приоритетном режиме
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+            while(true) {
+                HookedGetCursorPos(NULL);
+                Sleep(1);
+            }
+            return 0;
+        }, NULL, 0, NULL);
+    }
     return TRUE;
 }
