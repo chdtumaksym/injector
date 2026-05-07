@@ -4,16 +4,15 @@
 #include <stdint.h>
 #include <cstdio>
 
-// Стабильные оффсеты классов на текущий патч
 namespace offsets {
-    constexpr uintptr_t m_hPawn = 0x60C;
-    constexpr uintptr_t m_vOldOrigin = 0x127C;
-    constexpr uintptr_t m_iIDEntIndex = 0x1544; // Triggerbot offset
+    // Актуальные оффсеты на текущую минуту
+    constexpr uintptr_t m_hPawn = 0x5FC;        // Смещение хендла пешки в контроллере
+    constexpr uintptr_t m_vOldOrigin = 0x127C;  // Смещение координат в пешке
+    constexpr uintptr_t m_iIDEntIndex = 0x13A8; // Смещение ID сущности в прицеле (Triggerbot)
 }
 
 struct Vector3 { float x, y, z; };
 
-// Безопасное чтение памяти с защитой от Access Violation
 template <typename T>
 T ReadMem(uintptr_t addr) {
     if (!addr || addr < 0x10000 || addr > 0x7FFFFFFFFFFF) return T();
@@ -48,7 +47,6 @@ uintptr_t ResolveRIP(uintptr_t inst, uint32_t offset, uint32_t size) {
     return inst + size + ReadMem<int32_t>(inst + offset);
 }
 
-// Наш легендарный сканер, который НЕ крашит
 uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(moduleName));
     if (!base) return 0;
@@ -86,11 +84,10 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
 }
 
 DWORD WINAPI MainThread(LPVOID lpParam) {
-    LogMessage("[CS2] --- V102 STRATEGIC VICTORY ---\n");
+    LogMessage("[CS2] --- V103 DIAGNOSTIC BUILD ---\n");
     
     while (!GetModuleHandleA("client.dll")) Sleep(1000);
 
-    // Используем сигнатуры, которые сработали в твоем логе v100
     uintptr_t lpPattern = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 4E");
     uintptr_t elPattern = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 ? 8B FA C1 EB");
 
@@ -98,43 +95,53 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
     uintptr_t dwEntityList = ResolveRIP(elPattern, 3, 7);
 
     if (!dwLocalPlayerController || !dwEntityList) {
-        LogMessage("[!] CRITICAL: Patterns failed. LP:%p EL:%p\n", (void*)dwLocalPlayerController, (void*)dwEntityList);
+        LogMessage("[!] CRITICAL: Pattern scan failed.\n");
         return 1;
     }
 
-    LogMessage("[+] Patterns Resolved. Controller: %p, EntityList: %p\n", (void*)dwLocalPlayerController, (void*)dwEntityList);
+    LogMessage("[+] Core addresses resolved. Starting loop.\n");
 
     while (!(GetAsyncKeyState(VK_END) & 0x8000)) {
         uintptr_t controller = ReadMem<uintptr_t>(dwLocalPlayerController);
-        if (controller) {
-            uint32_t handle = ReadMem<uint32_t>(controller + offsets::m_hPawn);
-            uintptr_t list = ReadMem<uintptr_t>(dwEntityList);
-            
-            if (handle != 0 && handle != 0xFFFFFFFF && list) {
-                uintptr_t entry = ReadMem<uintptr_t>(list + 0x8 * ((handle & 0x7FFF) >> 9) + 0x10);
-                uintptr_t localPawn = ReadMem<uintptr_t>(entry + 120 * (handle & 0x1FF));
+        if (!controller) {
+            static bool logged = false;
+            if (!logged) { LogMessage("[Chain] Waiting for Controller pointer...\n"); logged = true; }
+            Sleep(1000); continue;
+        }
 
-                if (localPawn) {
-                    // 1. Координаты в лог
-                    Vector3 pos = ReadMem<Vector3>(localPawn + offsets::m_vOldOrigin);
-                    if (pos.x != 0.f) {
-                        LogMessage("POS: %.1f %.1f %.1f\n", pos.x, pos.y, pos.z);
-                    }
+        uint32_t handle = ReadMem<uint32_t>(controller + offsets::m_hPawn);
+        if (handle == 0 || handle == 0xFFFFFFFF) {
+            static int hCount = 0;
+            if (hCount++ % 10 == 0) LogMessage("[Chain] Pawn handle is invalid (0x%X). Are you in match?\n", handle);
+            Sleep(1000); continue;
+        }
 
-                    // 2. БОНУС: Безопасный Триггербот (работает при зажатом CapsLock)
-                    if (GetAsyncKeyState(VK_CAPITAL) & 0x8000) {
-                        int crosshairId = ReadMem<int>(localPawn + offsets::m_iIDEntIndex);
-                        if (crosshairId > 0 && crosshairId <= 64) {
-                            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-                            Sleep(10);
-                            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-                            Sleep(100);
-                        }
-                    }
-                }
+        uintptr_t list = ReadMem<uintptr_t>(dwEntityList);
+        if (!list) { LogMessage("[Chain] EntityList is null.\n"); Sleep(1000); continue; }
+
+        uintptr_t entry = ReadMem<uintptr_t>(list + 0x8 * ((handle & 0x7FFF) >> 9) + 0x10);
+        uintptr_t localPawn = ReadMem<uintptr_t>(entry + 120 * (handle & 0x1FF));
+
+        if (!localPawn) {
+            LogMessage("[Chain] LocalPawn not found in EntityList. Handle: 0x%X\n", handle);
+            Sleep(1000); continue;
+        }
+
+        // Если дошли сюда - значит цепочка жива
+        Vector3 pos = ReadMem<Vector3>(localPawn + offsets::m_vOldOrigin);
+        LogMessage("POS: X=%.1f Y=%.1f Z=%.1f\n", pos.x, pos.y, pos.z);
+
+        // Триггербот (CapsLock)
+        if (GetAsyncKeyState(VK_CAPITAL) & 0x8000) {
+            int crosshairId = ReadMem<int>(localPawn + offsets::m_iIDEntIndex);
+            if (crosshairId > 0 && crosshairId <= 64) {
+                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+                Sleep(10);
+                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                Sleep(150);
             }
         }
-        Sleep(500); // Поллинг 2 раза в секунду для стабильности
+        Sleep(500);
     }
 
     LogMessage("[!] Unloading.\n");
