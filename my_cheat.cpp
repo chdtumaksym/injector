@@ -54,7 +54,6 @@ uintptr_t ResolveRIP(uintptr_t inst, uint32_t offset, uint32_t size) {
     return inst + size + *reinterpret_cast<int32_t*>(inst + offset);
 }
 
-// Переписанный и абсолютно безопасный сканнер через VirtualQuery
 uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(moduleName));
     if (!base) return 0;
@@ -116,8 +115,10 @@ namespace schema {
         uintptr_t typeScope = (*(GetTypeScope_t**)schemaSystem)[constants::SchemaSystemIndex](schemaSystem, moduleName, nullptr);
         if (!typeScope) return 0;
 
-        using FindDeclaredClass_t = SchemaClassInfo_t*(__fastcall*)(uintptr_t, const char*);
-        SchemaClassInfo_t* classInfo = (*(FindDeclaredClass_t**)typeScope)[constants::FindClassIndex](typeScope, className);
+        using FindDeclaredClass_t = void(__fastcall*)(uintptr_t, SchemaClassInfo_t**, const char*);
+        SchemaClassInfo_t* classInfo = nullptr;
+        
+        (*(FindDeclaredClass_t**)typeScope)[constants::FindClassIndex](typeScope, &classInfo, className);
         
         if (classInfo && classInfo->m_fields) {
             for (int i = 0; i < classInfo->m_fields_count; i++) {
@@ -142,7 +143,7 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
     log << "    -> Found: " << std::hex << offsets::dwLocalPlayerController << "\n"; log.flush();
 
     log << "[+] Scanning dwEntityList...\n"; log.flush();
-    offsets::dwEntityList = ResolveRIP(FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 40 8B FA C1 EB"), 3, 7);
+    offsets::dwEntityList = ResolveRIP(FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 ? 8B FA C1 EB"), 3, 7);
     log << "    -> Found: " << std::hex << offsets::dwEntityList << "\n"; log.flush();
     
     log << "[+] Parsing Schema System for m_hPawn...\n"; log.flush();
