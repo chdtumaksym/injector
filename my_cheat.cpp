@@ -3,80 +3,108 @@
 #include <cstdio>
 #include <vector>
 
-// Твои новые оффсеты из JSON (статические адреса)
+// Твои оффсеты из JSON (сверил, в HEX перевел верно)
 namespace Offsets {
     constexpr uintptr_t dwLocalPlayerPawn = 0x2057720;
     constexpr uintptr_t dwEntityList = 0x24D1990;
     
-    // Оффсеты внутри классов (Schema)
+    // Смещения из твоего списка (Schema)
     constexpr uintptr_t m_hPawn = 0x6BC;
     constexpr uintptr_t m_iTeamNum = 0x3EB;
     constexpr uintptr_t m_pGameSceneNode = 0x330;
-    constexpr uintptr_t m_iHealth = 0x32C; // Обычно тут, если нет в твоем списке
+    constexpr uintptr_t m_iHealth = 0x32C; 
 }
 
-// Упрощенное чтение
 template <typename T>
 T Read(uintptr_t addr) {
     T val = T();
-    if (addr < 0x10000) return val;
-    __try { val = *(T*)addr; } __except (1) {}
+    if (addr < 0x10000 || addr > 0x7FFEFFFFFFFF) return val;
+    __try { val = *(T*)addr; } __except (EXCEPTION_EXECUTE_HANDLER) { return T(); }
     return val;
 }
 
-// Структура вектора для координат
 struct Vector3 { float x, y, z; };
 
 void AimLogic() {
     uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
-    if (!client) return;
+    if (!client) {
+        printf("[!] client.dll NOT FOUND\n");
+        return;
+    }
 
-    // 1. Находим себя
     uintptr_t localPlayerPawn = Read<uintptr_t>(client + Offsets::dwLocalPlayerPawn);
-    if (!localPlayerPawn) return;
+    if (!localPlayerPawn) {
+        // Если тут NULL - оффсет dwLocalPlayerPawn неверный
+        return; 
+    }
 
     int myTeam = Read<int>(localPlayerPawn + Offsets::m_iTeamNum);
-
-    // 2. Идем в список сущностей
     uintptr_t entityList = Read<uintptr_t>(client + Offsets::dwEntityList);
     if (!entityList) return;
 
-    // 3. Цикл по игрокам (первые 64 слота)
+    // Сканируем только когда зажата кнопка (например, правая кнопка мыши)
+    if (!(GetAsyncKeyState(VK_RBUTTON) & 0x8000)) return;
+
     for (int i = 1; i <= 64; i++) {
-        // Получаем контроллер (логическая сущность игрока)
         uintptr_t listEntry = Read<uintptr_t>(entityList + 0x10);
         uintptr_t controller = Read<uintptr_t>(listEntry + i * 0x78);
         if (!controller) continue;
 
-        // Берем хэндл на пешку (физическое тело)
         uint32_t pawnHandle = Read<uint32_t>(controller + Offsets::m_hPawn);
         if (!pawnHandle) continue;
 
-        // Вычисляем адрес самой пешки в памяти (магия Source 2)
+        // Поиск пешки по хэндлу в EntityList
         uintptr_t listEntry2 = Read<uintptr_t>(entityList + 0x8 * ((pawnHandle & 0x7FFF) >> 9) + 0x10);
         uintptr_t enemyPawn = Read<uintptr_t>(listEntry2 + 0x78 * (pawnHandle & 0x1FF));
         
         if (!enemyPawn || enemyPawn == localPlayerPawn) continue;
 
-        // Проверка на команду и здоровье
         int enemyTeam = Read<int>(enemyPawn + Offsets::m_iTeamNum);
         int enemyHealth = Read<int>(enemyPawn + Offsets::m_iHealth);
         
-        if (enemyTeam == myTeam || enemyHealth <= 0) continue;
+        // Фильтр: только живые враги
+        if (enemyTeam == myTeam || enemyHealth <= 0 || enemyHealth > 100) continue;
 
-        // 4. ДОСТАЕМ КООРДИНАТЫ ДЛЯ АИМА (Bone Matrix)
         uintptr_t gameSceneNode = Read<uintptr_t>(enemyPawn + Offsets::m_pGameSceneNode);
-        
-        // У костей в CS2 есть свой указатель внутри GameSceneNode
-        // 0x1F0 - это стандартный оффсет для BoneArray внутри CGameSceneNode
+        if (!gameSceneNode) continue;
+
+        // BoneArray - это место, где чаще всего ломается аим после патчей
         uintptr_t boneArray = Read<uintptr_t>(gameSceneNode + 0x1F0); 
-        
-        // 6 - это индекс кости головы (Head) для большинства моделей
-        // Каждая кость занимает 32 байта (структура трансформы)
+        if (!boneArray) continue;
+
+        // Кость головы (индекс 6)
         Vector3 headPos = Read<Vector3>(boneArray + (6 * 32));
 
-        // Теперь в headPos лежат X, Y, Z координаты головы врага в 3D мире.
-        // Дальше тебе нужно просто вычислить углы и записать их в dwViewAngles.
-        printf("Target %d Head Pos: X:%.2f Y:%.2f Z:%.2f\n", i, headPos.x, headPos.y, headPos.z);
+        if (headPos.x != 0) {
+            printf("[MATCH] ID: %d | HP: %d | Pos: %.1f, %.1f, %.1f\n", i, enemyHealth, headPos.x, headPos.y, headPos.z);
+        }
     }
+}
+
+DWORD WINAPI HackThread(LPVOID lpParam) {
+    // Создаем консоль, чтобы видеть printf!
+    AllocConsole();
+    FILE* f;
+    freopen_s(&f, "CONOUT$", "w", stdout);
+    
+    printf("--- CS2 INTERNAL DEBUG STARTED ---\n");
+    printf("Press END to unload\n\n");
+
+    while (!(GetAsyncKeyState(VK_END) & 0x8000)) {
+        AimLogic();
+        Sleep(1);
+    }
+
+    printf("Unloading...\n");
+    if (f) fclose(f);
+    FreeConsole();
+    FreeLibraryAndExitThread((HMODULE)lpParam, 0);
+    return 0;
+}
+
+BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
+    if (r == DLL_PROCESS_ATTACH) {
+        CloseHandle(CreateThread(0, 0, HackThread, h, 0, 0));
+    }
+    return TRUE;
 }
