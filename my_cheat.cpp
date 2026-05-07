@@ -3,15 +3,6 @@
 #include <string>
 #include <stdint.h>
 #include <cstdio>
-#include <cmath>
-
-namespace offsets {
-    constexpr uintptr_t m_pGameSceneNode = 0x328; 
-    constexpr uintptr_t m_vecAbsOrigin = 0xC8;   
-    constexpr uintptr_t m_iIDEntIndex = 0x1544; // CrosshairID
-}
-
-struct Vector3 { float x, y, z; };
 
 template <typename T>
 T ReadMem(uintptr_t addr) {
@@ -84,108 +75,98 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
 }
 
 DWORD WINAPI MainThread(LPVOID lpParam) {
-    LogMessage("\n[CS2] --- V111 APEX PREDATOR ---\n");
+    LogMessage("\n[CS2] --- V112 SELF-CALIBRATING ENGINE ---\n");
     
     while (!GetModuleHandleA("client.dll")) Sleep(1000);
 
-    uintptr_t lpPattern = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 4E");
-    uintptr_t elPattern = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 ? 8B FA C1 EB");
+    // Берем паттерн прямого поиска пешки, который успешно отработал у тебя в v105
+    uintptr_t pawnPattern = FindPattern("client.dll", "48 8B 05 ? ? ? ? 48 85 C0 74 4F");
+    uintptr_t dwLocalPlayerPawn = ResolveRIP(pawnPattern, 3, 7);
 
-    uintptr_t dwLocalPlayerController = ResolveRIP(lpPattern, 3, 7);
-    uintptr_t dwEntityList = ResolveRIP(elPattern, 3, 7);
+    if (!dwLocalPlayerPawn) {
+        pawnPattern = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 31");
+        dwLocalPlayerPawn = ResolveRIP(pawnPattern, 3, 7);
+    }
 
-    if (!dwLocalPlayerController || !dwEntityList) {
-        LogMessage("[!] CRITICAL FAILURE: Pattern scan failed.\n");
+    if (!dwLocalPlayerPawn) {
+        LogMessage("[!] CRITICAL FAILURE: Could not find LocalPlayerPawn pattern.\n");
         return 1;
     }
 
-    LogMessage("[+] Core Locked! LP: %p | EL: %p\n", (void*)dwLocalPlayerController, (void*)dwEntityList);
+    LogMessage("[+] Pawn Anchor Resolved: %p\n", (void*)dwLocalPlayerPawn);
 
-    int dyn_m_hPawn = 0; 
+    int calibratedTriggerOffset = 0;
+    std::vector<int> possibleOffsets;
+    bool waitingForWall = true;
 
     while (!(GetAsyncKeyState(VK_END) & 0x8000)) {
-        uintptr_t controller = ReadMem<uintptr_t>(dwLocalPlayerController);
-        uintptr_t list = ReadMem<uintptr_t>(dwEntityList);
-
-        if (!controller || !list) {
+        uintptr_t localPawn = ReadMem<uintptr_t>(dwLocalPlayerPawn);
+        if (!localPawn) {
             Sleep(500);
             continue;
         }
 
-        // ИСПРАВЛЕННЫЙ БРУТФОРС: Широкий диапазон, никаких глупых лимитов
-        if (dyn_m_hPawn == 0) {
-            for (int off = 0x500; off < 0x900; off += 4) {
-                uint32_t handle = ReadMem<uint32_t>(controller + off);
-                if (handle == 0 || handle == 0xFFFFFFFF) continue;
+        // РЕЖИМ КАЛИБРОВКИ
+        if (calibratedTriggerOffset == 0) {
+            if (waitingForWall) {
+                static bool msg1 = false;
+                if (!msg1) { LogMessage("[Calibrate] STEP 1: Look at a WALL (empty space) and press INSERT.\n"); msg1 = true; }
 
-                uint32_t idx = handle & 0x7FFF;
-                if (idx == 0 || idx > 2048) continue; 
-
-                uintptr_t entry = ReadMem<uintptr_t>(list + 0x8 * (idx >> 9) + 0x10);
-                if (!entry) continue;
-
-                uintptr_t pawn = ReadMem<uintptr_t>(entry + 120 * (idx & 0x1FF));
-                if (!pawn) continue;
-
-                // Двойная проверка: Узел сцены + Здоровье
-                uintptr_t sceneNode = ReadMem<uintptr_t>(pawn + offsets::m_pGameSceneNode);
-                if (!sceneNode || sceneNode < 0x10000) continue;
-
-                int health = ReadMem<int>(pawn + 0x334); // m_iHealth
-                if (health >= 1 && health <= 100) {
-                    dyn_m_hPawn = off;
-                    LogMessage("[+] BINGO! Bruteforced m_hPawn offset: 0x%X (Health: %d)\n", off, health);
-                    break;
-                }
-            }
-
-            if (dyn_m_hPawn == 0) {
-                static bool waitLog = false;
-                if (!waitLog) { LogMessage("[Scan] Bruteforcing memory... (Spawn and stay alive!)\n"); waitLog = true; }
-                Sleep(1000);
-                continue;
-            }
-        }
-
-        // РАБОТА С ЗАБЛОКИРОВАННЫМ ОФФСЕТОМ
-        uint32_t handle = ReadMem<uint32_t>(controller + dyn_m_hPawn);
-        if (handle != 0 && handle != 0xFFFFFFFF) {
-            uint32_t idx = handle & 0x7FFF;
-            uintptr_t entry = ReadMem<uintptr_t>(list + 0x8 * (idx >> 9) + 0x10);
-            if (entry) {
-                uintptr_t localPawn = ReadMem<uintptr_t>(entry + 120 * (idx & 0x1FF));
-                if (localPawn) {
-                    
-                    uintptr_t sceneNode = ReadMem<uintptr_t>(localPawn + offsets::m_pGameSceneNode);
-                    if (sceneNode) {
-                        Vector3 pos = ReadMem<Vector3>(sceneNode + offsets::m_vecAbsOrigin);
-                        static int tick = 0;
-                        if (tick++ % 20 == 0 && std::isfinite(pos.x) && pos.x != 0.0f) {
-                            LogMessage("[Target Locked] POS: X=%.1f Y=%.1f\n", pos.x, pos.y);
+                if (GetAsyncKeyState(VK_INSERT) & 0x8000) {
+                    possibleOffsets.clear();
+                    // Сканируем память пешки там, где обычно лежат ID прицела
+                    for (int off = 0x1300; off < 0x1700; off += 4) {
+                        int val = ReadMem<int>(localPawn + off);
+                        // Смотря в стену, ID сущности должен быть <= 0 или огромным мусором
+                        if (val <= 0 || val > 100) { 
+                            possibleOffsets.push_back(off);
                         }
                     }
-
-                    // ТРИГГЕРБОТ
-                    if (GetAsyncKeyState(VK_CAPITAL) & 0x8000) { 
-                        int crossId = ReadMem<int>(localPawn + offsets::m_iIDEntIndex);
-                        if (crossId > 0 && crossId <= 64) {
-                            LogMessage("[Triggerbot] Firing! Enemy ID: %d\n", crossId);
-                            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-                            Sleep(15);
-                            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-                            Sleep(150);
-                        }
-                    }
-                } else {
-                    dyn_m_hPawn = 0; 
+                    LogMessage("[Calibrate] Saved %d empty offsets. STEP 2: AIM AT A BOT and press DELETE.\n", possibleOffsets.size());
+                    waitingForWall = false;
+                    Sleep(500);
                 }
             } else {
-                dyn_m_hPawn = 0;
-            }
-        } else {
-            dyn_m_hPawn = 0;
-        }
+                if (GetAsyncKeyState(VK_DELETE) & 0x8000) {
+                    std::vector<int> matched;
+                    for (int off : possibleOffsets) {
+                        int val = ReadMem<int>(localPawn + off);
+                        // Смотря на бота, ID должен стать от 1 до 64
+                        if (val > 0 && val <= 64) { 
+                            matched.push_back(off);
+                        }
+                    }
 
+                    if (matched.size() == 1) {
+                        calibratedTriggerOffset = matched[0];
+                        LogMessage("[+] BINGO! Triggerbot offset calibrated: 0x%X. You are ARMED.\n", calibratedTriggerOffset);
+                    } else if (matched.size() > 1) {
+                        LogMessage("[!] Narrowed down to %d offsets. Keep aiming at the bot and press DELETE again.\n", matched.size());
+                        possibleOffsets = matched;
+                        Sleep(500);
+                    } else {
+                        LogMessage("[-] Calibration failed. No offset changed. Press INSERT to restart Step 1.\n");
+                        waitingForWall = true;
+                        Sleep(500);
+                    }
+                }
+            }
+        } 
+        // БОЕВОЙ РЕЖИМ
+        else {
+            static bool armLog = false;
+            if (!armLog) { LogMessage("[Armed] Hold CapsLock to fire.\n"); armLog = true; }
+
+            if (GetAsyncKeyState(VK_CAPITAL) & 0x8000) {
+                int crossId = ReadMem<int>(localPawn + calibratedTriggerOffset);
+                if (crossId > 0 && crossId <= 64) {
+                    mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+                    Sleep(10);
+                    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                    Sleep(150);
+                }
+            }
+        }
         Sleep(20);
     }
 
