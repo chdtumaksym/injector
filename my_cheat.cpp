@@ -34,16 +34,19 @@ void AimLogic() {
 
     uintptr_t localPlayerPawn = Read<uintptr_t>(client + Offsets::dwLocalPlayerPawn);
     if (!localPlayerPawn) {
-        // Если тут NULL - оффсет dwLocalPlayerPawn неверный
+        printf("[!] LocalPlayerPawn is NULL. (Bad offset: 0x%X)\n", Offsets::dwLocalPlayerPawn);
         return; 
     }
 
     int myTeam = Read<int>(localPlayerPawn + Offsets::m_iTeamNum);
     uintptr_t entityList = Read<uintptr_t>(client + Offsets::dwEntityList);
-    if (!entityList) return;
+    if (!entityList) {
+        printf("[!] EntityList is NULL. (Bad offset: 0x%X)\n", Offsets::dwEntityList);
+        return;
+    }
 
-    // Сканируем только когда зажата кнопка (например, правая кнопка мыши)
-    if (!(GetAsyncKeyState(VK_RBUTTON) & 0x8000)) return;
+    // Проверку на кнопку вырезал. Теперь сканирует всегда.
+    bool found_anyone = false;
 
     for (int i = 1; i <= 64; i++) {
         uintptr_t listEntry = Read<uintptr_t>(entityList + 0x10);
@@ -76,8 +79,13 @@ void AimLogic() {
         Vector3 headPos = Read<Vector3>(boneArray + (6 * 32));
 
         if (headPos.x != 0) {
-            printf("[MATCH] ID: %d | HP: %d | Pos: %.1f, %.1f, %.1f\n", i, enemyHealth, headPos.x, headPos.y, headPos.z);
+            found_anyone = true;
+            printf("[MATCH] Enemy ID: %d | HP: %d | HeadPos: %.1f, %.1f, %.1f\n", i, enemyHealth, headPos.x, headPos.y, headPos.z);
         }
+    }
+    
+    if (!found_anyone) {
+        printf("[-] No valid enemies found in this tick.\n");
     }
 }
 
@@ -92,7 +100,7 @@ DWORD WINAPI HackThread(LPVOID lpParam) {
 
     while (!(GetAsyncKeyState(VK_END) & 0x8000)) {
         AimLogic();
-        Sleep(1);
+        Sleep(1000); // Задержка 1 секунда, чтобы не спамило миллион строк в миллисекунду
     }
 
     printf("Unloading...\n");
