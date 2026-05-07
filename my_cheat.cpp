@@ -5,10 +5,10 @@
 #include <cstdio>
 
 namespace offsets {
-    // Архитектурно правильные оффсеты для Source 2
+    // Железобетонные оффсеты базовых классов, которые Valve не меняют
     constexpr uintptr_t m_pGameSceneNode = 0x328; 
     constexpr uintptr_t m_vecAbsOrigin = 0xC8;   
-    constexpr uintptr_t m_iIDEntIndex = 0x1544; // CrosshairID
+    constexpr uintptr_t m_iIDEntIndex = 0x1544; 
 }
 
 struct Vector3 { float x, y, z; };
@@ -84,60 +84,109 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
 }
 
 DWORD WINAPI MainThread(LPVOID lpParam) {
-    LogMessage("[CS2] --- V106 GAMESCENE NODE UPDATE ---\n");
+    LogMessage("\n[CS2] --- V107 HEURISTIC ENGINE ---\n");
     
     while (!GetModuleHandleA("client.dll")) Sleep(1000);
 
-    uintptr_t pawnPattern = FindPattern("client.dll", "48 8B 05 ? ? ? ? 48 85 C0 74 4F");
-    uintptr_t dwLocalPlayerPawn = ResolveRIP(pawnPattern, 3, 7);
+    uintptr_t lpPattern = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 4E");
+    uintptr_t elPattern = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 ? 8B FA C1 EB");
 
-    if (!dwLocalPlayerPawn) {
-        pawnPattern = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 31");
-        dwLocalPlayerPawn = ResolveRIP(pawnPattern, 3, 7);
-    }
+    uintptr_t dwLocalPlayerController = ResolveRIP(lpPattern, 3, 7);
+    uintptr_t dwEntityList = ResolveRIP(elPattern, 3, 7);
 
-    if (!dwLocalPlayerPawn) {
-        LogMessage("[!] CRITICAL FAILURE: Could not find LocalPlayerPawn address.\n");
+    if (!dwLocalPlayerController || !dwEntityList) {
+        LogMessage("[!] CRITICAL FAILURE: Could not find base addresses.\n");
         return 1;
     }
 
-    LogMessage("[+] Pawn Address Resolved: %p\n", (void*)dwLocalPlayerPawn);
+    LogMessage("[+] Base Anchors Locked. Controller: %p | EntityList: %p\n", (void*)dwLocalPlayerController, (void*)dwEntityList);
+
+    static int dynamicPawnOffset = 0;
 
     while (!(GetAsyncKeyState(VK_END) & 0x8000)) {
-        uintptr_t localPawn = ReadMem<uintptr_t>(dwLocalPlayerPawn);
-        
-        if (localPawn) {
-            // Читаем указатель на GameSceneNode
-            uintptr_t sceneNode = ReadMem<uintptr_t>(localPawn + offsets::m_pGameSceneNode);
-            
-            if (sceneNode) {
-                // Читаем абсолютные координаты
-                Vector3 pos = ReadMem<Vector3>(sceneNode + offsets::m_vecAbsOrigin);
+        uintptr_t controller = ReadMem<uintptr_t>(dwLocalPlayerController);
+        uintptr_t list = ReadMem<uintptr_t>(dwEntityList);
+
+        if (!controller || !list) {
+            Sleep(500);
+            continue;
+        }
+
+        // Этап 1: Автоматический поиск m_hPawn (Эвристика)
+        if (dynamicPawnOffset == 0) {
+            for (int off = 0x500; off < 0x900; off += 4) {
+                uint32_t handle = ReadMem<uint32_t>(controller + off);
+                if (handle == 0 || handle == 0xFFFFFFFF) continue;
                 
-                static int tick = 0;
-                if (tick++ % 10 == 0) { 
-                    LogMessage("POS (SceneNode): X=%.1f Y=%.1f Z=%.1f\n", pos.x, pos.y, pos.z);
+                uint32_t idx = handle & 0x7FFF;
+                if (idx == 0 || idx > 2000) continue;
+
+                uintptr_t entry = ReadMem<uintptr_t>(list + 0x8 * (idx >> 9) + 0x10);
+                if (!entry) continue;
+
+                uintptr_t pawn = ReadMem<uintptr_t>(entry + 120 * (idx & 0x1FF));
+                if (!pawn) continue;
+
+                uintptr_t sceneNode = ReadMem<uintptr_t>(pawn + offsets::m_pGameSceneNode);
+                if (sceneNode && sceneNode > 0x10000) {
+                    Vector3 pos = ReadMem<Vector3>(sceneNode + offsets::m_vecAbsOrigin);
+                    if (pos.x != 0.0f || pos.y != 0.0f) {
+                        dynamicPawnOffset = off;
+                        LogMessage("[Heuristic] Locked m_hPawn at dynamic offset: 0x%X\n", off);
+                        break;
+                    }
                 }
-            } else {
-                static bool nodeWait = false;
-                if (!nodeWait) { LogMessage("[State] SceneNode is null. Waiting for spawn...\n"); nodeWait = true; }
             }
 
-            // Триггербот (CapsLock)
-            if (GetAsyncKeyState(VK_CAPITAL) & 0x8000) {
-                int crosshairId = ReadMem<int>(localPawn + offsets::m_iIDEntIndex);
-                if (crosshairId > 0 && crosshairId <= 64) {
-                    mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-                    Sleep(10);
-                    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-                    Sleep(150);
+            if (dynamicPawnOffset == 0) {
+                static bool scanLog = false;
+                if (!scanLog) { LogMessage("[Scan] Searching for valid Pawn... (Spawn into a match!)\n"); scanLog = true; }
+                Sleep(1000);
+                continue;
+            }
+        }
+
+        // Этап 2: Чтение данных по найденному смещению
+        bool validTarget = false;
+        uint32_t handle = ReadMem<uint32_t>(controller + dynamicPawnOffset);
+        
+        if (handle != 0 && handle != 0xFFFFFFFF) {
+            uint32_t idx = handle & 0x7FFF;
+            uintptr_t entry = ReadMem<uintptr_t>(list + 0x8 * (idx >> 9) + 0x10);
+            if (entry) {
+                uintptr_t pawn = ReadMem<uintptr_t>(entry + 120 * (idx & 0x1FF));
+                if (pawn) {
+                    uintptr_t sceneNode = ReadMem<uintptr_t>(pawn + offsets::m_pGameSceneNode);
+                    if (sceneNode) {
+                        Vector3 pos = ReadMem<Vector3>(sceneNode + offsets::m_vecAbsOrigin);
+                        static int tick = 0;
+                        if (tick++ % 10 == 0) {
+                            LogMessage("POS: X=%.1f Y=%.1f Z=%.1f\n", pos.x, pos.y, pos.z);
+                        }
+                        validTarget = true;
+
+                        // Триггербот (CapsLock)
+                        if (GetAsyncKeyState(VK_CAPITAL) & 0x8000) {
+                            int crosshairId = ReadMem<int>(pawn + offsets::m_iIDEntIndex);
+                            if (crosshairId > 0 && crosshairId <= 64) {
+                                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+                                Sleep(10);
+                                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                                Sleep(150);
+                            }
+                        }
+                    }
                 }
             }
-        } else {
-            static bool waitMsg = false;
-            if (!waitMsg) { LogMessage("[State] Waiting for player pawn...\n"); waitMsg = true; }
         }
-        
+
+        // Если игрок умер или отключился — сбрасываем эвристику для нового поиска
+        if (!validTarget) {
+            static bool resetLog = false;
+            if (!resetLog) { LogMessage("[Heuristic] Target lost. Rescanning...\n"); resetLog = true; }
+            dynamicPawnOffset = 0; 
+        }
+
         Sleep(50);
     }
 
