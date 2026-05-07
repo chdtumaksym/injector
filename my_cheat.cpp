@@ -21,7 +21,6 @@ namespace offsets {
     uintptr_t m_vOldOrigin = 0;
 }
 
-// Bulletproof Logger: Writes to both DebugView and File with immediate flush
 void LogMessage(const char* fmt, ...) {
     char buffer[256];
     va_list args;
@@ -29,10 +28,8 @@ void LogMessage(const char* fmt, ...) {
     vsprintf_s(buffer, fmt, args);
     va_end(args);
 
-    // 1. Output to System Debugger
     OutputDebugStringA(buffer);
 
-    // 2. Output to File with immediate close to prevent data loss on crash
     FILE* f = nullptr;
     if (fopen_s(&f, "CS2_Final_Log.txt", "a+") == 0 && f) {
         fprintf(f, "%s", buffer);
@@ -124,26 +121,40 @@ namespace schema {
     uintptr_t GetOffset(const char* moduleName, const char* className, const char* fieldName) {
         HMODULE hSch = GetModuleHandleA("schemasystem.dll");
         if (!hSch) return 0;
+        
         auto CreateInterface = reinterpret_cast<CreateInterfaceFn>(GetProcAddress(hSch, "CreateInterface"));
         if (!CreateInterface) return 0;
+        
         void* schemaSystem = CreateInterface("SchemaSystem_001", nullptr);
         if (!schemaSystem) return 0;
+        
         using GetTypeScope_t = void*(__fastcall*)(void*, const char*, void*);
         auto getScope = GetVFunc<GetTypeScope_t>(schemaSystem, constants::SchemaSystemIndex);
+        if (!getScope) return 0;
+        
         void* typeScope = getScope(schemaSystem, moduleName, nullptr);
         if (!typeScope) return 0;
-        using FindDeclaredClass_t = void(__fastcall*)(void*, void**, const char*);
+        
+        // Исправленная сигнатура: возвращает указатель, принимает только строку
+        using FindDeclaredClass_t = void*(__fastcall*)(void*, const char*);
         auto findClass = GetVFunc<FindDeclaredClass_t>(typeScope, constants::FindClassIndex);
-        void* classInfo = nullptr;
-        findClass(typeScope, &classInfo, className);
-        if (!classInfo) return 0;
+        if (!findClass) return 0;
+        
+        void* classInfo = findClass(typeScope, className);
+        if (!classInfo) {
+            LogMessage("[CS2] [-] Schema Error: Class '%s' not found!\n", className);
+            return 0;
+        }
+        
         short fieldsCount = ReadMem<short>(reinterpret_cast<uintptr_t>(classInfo) + 0x1C);
         uintptr_t fieldsPtr = ReadMem<uintptr_t>(reinterpret_cast<uintptr_t>(classInfo) + 0x28);
+        
         if (fieldsCount > 0 && fieldsCount < 1000 && fieldsPtr) {
             for (int i = 0; i < fieldsCount; i++) {
                 uintptr_t fieldAddr = fieldsPtr + (i * 0x20); 
                 uintptr_t namePtr = ReadMem<uintptr_t>(fieldAddr);
                 int offset = ReadMem<int>(fieldAddr + 0x10);
+                
                 char nameBuf[128] = {0};
                 if (SafeReadString(namePtr, nameBuf, sizeof(nameBuf))) {
                     if (strcmp(nameBuf, fieldName) == 0) return static_cast<uintptr_t>(offset);
@@ -157,7 +168,7 @@ namespace schema {
 DWORD WINAPI MainThread(LPVOID lpParam) {
     while (!GetModuleHandleA("client.dll") || !GetModuleHandleA("schemasystem.dll")) Sleep(500);
 
-    LogMessage("[CS2] Autonomous System Online.\n");
+    LogMessage("\n[CS2] Autonomous System Online.\n");
 
     offsets::dwLocalPlayerController = ResolveRIP(FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 4E"), 3, 7);
     offsets::dwEntityList = ResolveRIP(FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 ? 8B FA C1 EB"), 3, 7);
@@ -170,7 +181,7 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
         FreeLibraryAndExitThread(static_cast<HMODULE>(lpParam), 1);
     }
 
-    LogMessage("[CS2] [+] Target Acquired. m_hPawn: 0x%x\n", (uint32_t)offsets::m_hPawn);
+    LogMessage("[CS2] [+] Target Acquired. m_hPawn: 0x%x | m_vOldOrigin: 0x%x\n", (uint32_t)offsets::m_hPawn, (uint32_t)offsets::m_vOldOrigin);
 
     while (!(GetAsyncKeyState(VK_END) & 0x8000)) {
         uintptr_t ctrl = ReadMem<uintptr_t>(offsets::dwLocalPlayerController);
@@ -180,14 +191,17 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
         if (handle == 0 || handle == 0xFFFFFFFF) { Sleep(100); continue; }
 
         uintptr_t list = ReadMem<uintptr_t>(offsets::dwEntityList);
+        if (!list) { Sleep(100); continue; }
+
         uintptr_t entryBase = ReadMem<uintptr_t>(list + 0x8 * ((handle & 0x7FFF) >> 9) + 0x10);
+        if (!entryBase) { Sleep(100); continue; }
+
         uintptr_t pawn = ReadMem<uintptr_t>(entryBase + constants::EntityListEntrySize * (handle & 0x1FF));
-        
-        if (pawn) {
-            Vector3 pos = ReadMem<Vector3>(pawn + offsets::m_vOldOrigin);
-            if (pos.x != 0.f || pos.y != 0.f) {
-                LogMessage("POS: %.2f %.2f %.2f\n", pos.x, pos.y, pos.z);
-            }
+        if (!pawn) { Sleep(100); continue; }
+
+        Vector3 pos = ReadMem<Vector3>(pawn + offsets::m_vOldOrigin);
+        if (pos.x != 0.f || pos.y != 0.f) {
+            LogMessage("POS: %.2f %.2f %.2f\n", pos.x, pos.y, pos.z);
         }
         Sleep(1000);
     }
