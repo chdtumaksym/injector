@@ -1,44 +1,47 @@
 #include <windows.h>
-#include <fstream>
 #include <stdint.h>
 
-DWORD WINAPI OffsetScannerThread(LPVOID lpParam) {
-    std::ofstream log("CS2_Scanner_Log.txt", std::ios::app);
-    log << "--- STARTING AUTO-SCAN ---\n";
+namespace offsets {
+    constexpr uintptr_t dwLocalPlayerPawn = 0x2057720; 
+    constexpr uintptr_t m_iIDEntIndex = 0x13C8; // ТОТ САМЫЙ ОФФСЕТ ИЗ ТВОЕГО ЛОГА!
+    constexpr uintptr_t m_iTeamNum = 0x3CB;
+}
 
+DWORD WINAPI FinalTriggerThread(LPVOID lpParam) {
     uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
-    // Используем твой новый рабочий адрес (0x2057720)
-    uintptr_t localPlayerPawn = 0x2057720;
+    if (!client) return 0;
+
+    // Даем игре время прогрузиться
+    Sleep(5000);
 
     while (true) {
-        uintptr_t localPlayer = *(uintptr_t*)(client + localPlayerPawn);
+        uintptr_t localPlayer = *(uintptr_t*)(client + offsets::dwLocalPlayerPawn);
+        
         if (localPlayer > 0x1000) {
-            // Сканируем диапазон, где обычно лежит ID прицела (от 0x1300 до 0x1600)
-            for (uintptr_t offset = 0x1300; offset <= 0x1600; offset += 4) {
-                int value = *(int*)(localPlayer + offset);
+            int crosshairId = *(int*)(localPlayer + offsets::m_iIDEntIndex);
+
+            // Если в прицеле враг (ID от 1 до 64)
+            if (crosshairId > 0 && crosshairId <= 64) {
                 
-                // Если мы видим ID врага (от 1 до 64)
-                if (value > 0 && value <= 64) {
-                    log << "[FOUND CANDIDATE] Offset: 0x" << std::hex << offset << " Value: " << std::dec << value << "\n";
-                    log.flush();
-                    
-                    // ЕСЛИ ЭТО ТОТ САМЫЙ ОФФСЕТ - СТРЕЛЯЕМ!
-                    INPUT input = { 0 };
-                    input.type = INPUT_MOUSE;
-                    input.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-                    SendInput(1, &input, sizeof(INPUT));
-                    Sleep(10);
-                    input.mi.dwFlags = MOUSEEVENTF_LEFTUP;
-                    SendInput(1, &input, sizeof(INPUT));
-                }
+                // ТРИГГЕР: Одиночный четкий выстрел
+                INPUT input[2] = { 0 };
+                input[0].type = INPUT_MOUSE;
+                input[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+                input[1].type = INPUT_MOUSE;
+                input[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+                
+                SendInput(2, input, sizeof(INPUT));
+                
+                // Пауза, чтобы не стрелять в ту же цель мгновенно
+                Sleep(300); 
             }
         }
-        Sleep(100); 
+        Sleep(1); 
     }
     return 0;
 }
 
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
-    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, OffsetScannerThread, 0, 0, 0));
+    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, FinalTriggerThread, 0, 0, 0));
     return TRUE;
 }
