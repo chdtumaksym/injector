@@ -6,8 +6,8 @@
 
 namespace constants {
     constexpr int EntityListEntrySize = 0x78; 
-    constexpr int SchemaSystemIndex = 13; // FindTypeScopeForModule
-    constexpr int FindClassIndex = 2;     // FindDeclaredClass
+    constexpr int SchemaSystemIndex = 13; 
+    constexpr int FindClassIndex = 2;     
 }
 
 struct Vector3 { float x, y, z; };
@@ -21,7 +21,6 @@ namespace offsets {
     uintptr_t m_vOldOrigin = 0;
 }
 
-// Улучшенный логгер с принудительной записью на диск
 void LogMessage(const char* fmt, ...) {
     char buffer[512];
     va_list args;
@@ -44,14 +43,17 @@ T ReadMem(uintptr_t addr) {
     if (!addr || addr < 0x10000 || addr > 0x7FFFFFFFFFFF) return T();
     MEMORY_BASIC_INFORMATION mbi;
     if (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) && mbi.State == MEM_COMMIT) {
-        if (!(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
-            return *reinterpret_cast<T*>(addr);
+        if (!(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+            T val;
+            memcpy(&val, reinterpret_cast<void*>(addr), sizeof(T));
+            return val;
+        }
     }
     return T();
 }
 
 bool SafeReadString(uintptr_t addr, char* out, size_t maxLen) {
-    if (!addr || addr < 0x10000 || addr > 0x7FFFFFFFFFFF) return false;
+    if (!addr) return false;
     for (size_t i = 0; i < maxLen; ++i) {
         char c = ReadMem<char>(addr + i);
         out[i] = c;
@@ -108,38 +110,41 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
 }
 
 namespace schema {
-    template <typename T>
-    inline T GetVFunc(void* inst, int index) {
-        if (!inst) return nullptr;
-        void** vtable = *reinterpret_cast<void***>(inst);
-        return reinterpret_cast<T>(vtable[index]);
-    }
-
     uintptr_t GetOffset(const char* moduleName, const char* className, const char* fieldName) {
         HMODULE hSch = GetModuleHandleA("schemasystem.dll");
         if (!hSch) return 0;
         
         auto CreateInterface = reinterpret_cast<CreateInterfaceFn>(GetProcAddress(hSch, "CreateInterface"));
+        if (!CreateInterface) return 0;
+
         void* schemaSystem = CreateInterface("SchemaSystem_001", nullptr);
         if (!schemaSystem) return 0;
 
-        using GetTypeScope_t = void*(__fastcall*)(void*, const char*, void*);
-        auto getScope = GetVFunc<GetTypeScope_t>(schemaSystem, constants::SchemaSystemIndex);
-        void* typeScope = getScope(schemaSystem, moduleName, nullptr);
+        // ПАРАНОИДАЛЬНЫЙ ВЫЗОВ VFUNC
+        void** vtable = *reinterpret_cast<void***>(schemaSystem);
+        if (!vtable) return 0;
+        
+        auto getScope = reinterpret_cast<void*(__fastcall*)(void*, const char*)>(vtable[constants::SchemaSystemIndex]);
+        if (!getScope) return 0;
+
+        void* typeScope = getScope(schemaSystem, moduleName);
         if (!typeScope) return 0;
 
-        using FindDeclaredClass_t = void*(__fastcall*)(void*, const char*);
-        auto findClass = GetVFunc<FindDeclaredClass_t>(typeScope, constants::FindClassIndex);
+        void** scopeVtable = *reinterpret_cast<void***>(typeScope);
+        if (!scopeVtable) return 0;
+
+        auto findClass = reinterpret_cast<void*(__fastcall*)(void*, const char*)>(scopeVtable[constants::FindClassIndex]);
+        if (!findClass) return 0;
+
         void* classInfo = findClass(typeScope, className);
         if (!classInfo) return 0;
 
-        // Поля в SchemaClassInfo_t: count(0x1C), ptr(0x28)
         short fieldsCount = ReadMem<short>(reinterpret_cast<uintptr_t>(classInfo) + 0x1C);
         uintptr_t fieldsPtr = ReadMem<uintptr_t>(reinterpret_cast<uintptr_t>(classInfo) + 0x28);
         
         if (fieldsCount > 0 && fieldsPtr) {
             for (int i = 0; i < fieldsCount; i++) {
-                uintptr_t fieldAddr = fieldsPtr + (i * 0x20); // Размер структуры поля 0x20
+                uintptr_t fieldAddr = fieldsPtr + (i * 0x20); 
                 uintptr_t namePtr = ReadMem<uintptr_t>(fieldAddr);
                 int offset = ReadMem<int>(fieldAddr + 0x10);
                 
@@ -156,23 +161,28 @@ namespace schema {
 DWORD WINAPI MainThread(LPVOID lpParam) {
     while (!GetModuleHandleA("client.dll") || !GetModuleHandleA("schemasystem.dll")) Sleep(500);
 
-    LogMessage("\n[CS2] --- V99 AUTONOMOUS START ---\n");
+    LogMessage("[CS2] --- V100 PARANOID START ---\n");
 
     offsets::dwLocalPlayerController = ResolveRIP(FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 4E"), 3, 7);
     offsets::dwEntityList = ResolveRIP(FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 ? 8B FA C1 EB"), 3, 7);
     
     LogMessage("[Scan] LP: %p | EL: %p\n", (void*)offsets::dwLocalPlayerController, (void*)offsets::dwEntityList);
 
+    // Heartbeat логи для точной отладки
+    LogMessage("[Schema] Fetching m_hPawn...\n");
     offsets::m_hPawn = schema::GetOffset("client.dll", "CBasePlayerController", "m_hPawn");
+    LogMessage("[Schema] m_hPawn: 0x%x\n", (uint32_t)offsets::m_hPawn);
+
+    LogMessage("[Schema] Fetching m_vOldOrigin...\n");
     offsets::m_vOldOrigin = schema::GetOffset("client.dll", "C_BasePlayerPawn", "m_vOldOrigin");
+    LogMessage("[Schema] m_vOldOrigin: 0x%x\n", (uint32_t)offsets::m_vOldOrigin);
 
     if (!offsets::dwLocalPlayerController || !offsets::dwEntityList || !offsets::m_hPawn || !offsets::m_vOldOrigin) {
-        LogMessage("[!] FAILURE. Offsets: Pawn=0x%x, Origin=0x%x\n", (uint32_t)offsets::m_hPawn, (uint32_t)offsets::m_vOldOrigin);
-        LogMessage("[!] Thread hibernating to prevent crash. Check log.\n");
-        while(true) Sleep(1000); // Не выходим, чтобы не крашнуть
+        LogMessage("[!] FAILURE. One of critical offsets is NULL. Thread hibernating.\n");
+        while(true) Sleep(1000); 
     }
 
-    LogMessage("[+] SUCCESS. System active. Press END to stop.\n");
+    LogMessage("[+] SUCCESS. System active. Tracking coordinates...\n");
 
     while (!(GetAsyncKeyState(VK_END) & 0x8000)) {
         uintptr_t ctrl = ReadMem<uintptr_t>(offsets::dwLocalPlayerController);
@@ -190,15 +200,13 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
         }
         Sleep(1000);
     }
-
-    LogMessage("[!] Shutdown requested.\n");
     return 0;
 }
 
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
     if (r == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(h);
-        if (HANDLE ht = CreateThread(nullptr, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(MainThread), nullptr, 0, nullptr)) 
+        if (HANDLE ht = CreateThread(0, 0, (LPTHREAD_START_ROUTINE)MainThread, 0, 0, 0)) 
             CloseHandle(ht);
     }
     return TRUE;
