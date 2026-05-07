@@ -5,6 +5,12 @@
 #include <cstdio>
 #include <cmath>
 
+namespace offsets {
+    constexpr uintptr_t m_pGameSceneNode = 0x328; 
+    constexpr uintptr_t m_vecAbsOrigin = 0xC8;   
+    constexpr uintptr_t m_iIDEntIndex = 0x1544; // CrosshairID
+}
+
 struct Vector3 { float x, y, z; };
 
 template <typename T>
@@ -78,11 +84,10 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
 }
 
 DWORD WINAPI MainThread(LPVOID lpParam) {
-    LogMessage("\n[CS2] --- V110 ULTIMATE BRUTEFORCER ---\n");
+    LogMessage("\n[CS2] --- V111 APEX PREDATOR ---\n");
     
     while (!GetModuleHandleA("client.dll")) Sleep(1000);
 
-    // Базовые якоря (работают железно)
     uintptr_t lpPattern = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 4E");
     uintptr_t elPattern = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 ? 8B FA C1 EB");
 
@@ -96,7 +101,7 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
 
     LogMessage("[+] Core Locked! LP: %p | EL: %p\n", (void*)dwLocalPlayerController, (void*)dwEntityList);
 
-    int dyn_m_hPawn = 0; // Сюда мы запишем правильный оффсет
+    int dyn_m_hPawn = 0; 
 
     while (!(GetAsyncKeyState(VK_END) & 0x8000)) {
         uintptr_t controller = ReadMem<uintptr_t>(dwLocalPlayerController);
@@ -107,16 +112,14 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
             continue;
         }
 
-        // БРУТФОРС ОФФСЕТА ПЕШКИ
+        // ИСПРАВЛЕННЫЙ БРУТФОРС: Широкий диапазон, никаких глупых лимитов
         if (dyn_m_hPawn == 0) {
-            // Ищем в диапазоне актуальных смещений CS2 (0x700 - 0x850)
-            for (int off = 0x700; off < 0x850; off += 4) {
+            for (int off = 0x500; off < 0x900; off += 4) {
                 uint32_t handle = ReadMem<uint32_t>(controller + off);
                 if (handle == 0 || handle == 0xFFFFFFFF) continue;
 
                 uint32_t idx = handle & 0x7FFF;
-                // ИНДЕКС ПЕШКИ ВСЕГДА БОЛЬШЕ 64! Отсекаем мусор и контроллеры.
-                if (idx <= 64 || idx > 2048) continue;
+                if (idx == 0 || idx > 2048) continue; 
 
                 uintptr_t entry = ReadMem<uintptr_t>(list + 0x8 * (idx >> 9) + 0x10);
                 if (!entry) continue;
@@ -124,8 +127,11 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
                 uintptr_t pawn = ReadMem<uintptr_t>(entry + 120 * (idx & 0x1FF));
                 if (!pawn) continue;
 
-                // Магия: проверяем, живой ли это игрок, читая m_iHealth (0x334)
-                int health = ReadMem<int>(pawn + 0x334);
+                // Двойная проверка: Узел сцены + Здоровье
+                uintptr_t sceneNode = ReadMem<uintptr_t>(pawn + offsets::m_pGameSceneNode);
+                if (!sceneNode || sceneNode < 0x10000) continue;
+
+                int health = ReadMem<int>(pawn + 0x334); // m_iHealth
                 if (health >= 1 && health <= 100) {
                     dyn_m_hPawn = off;
                     LogMessage("[+] BINGO! Bruteforced m_hPawn offset: 0x%X (Health: %d)\n", off, health);
@@ -135,13 +141,13 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
 
             if (dyn_m_hPawn == 0) {
                 static bool waitLog = false;
-                if (!waitLog) { LogMessage("[Scan] Bruteforcing memory... (Make sure you are spawned and alive!)\n"); waitLog = true; }
+                if (!waitLog) { LogMessage("[Scan] Bruteforcing memory... (Spawn and stay alive!)\n"); waitLog = true; }
                 Sleep(1000);
                 continue;
             }
         }
 
-        // РАБОТАЕМ С НАЙДЕННЫМ ОФФСЕТОМ
+        // РАБОТА С ЗАБЛОКИРОВАННЫМ ОФФСЕТОМ
         uint32_t handle = ReadMem<uint32_t>(controller + dyn_m_hPawn);
         if (handle != 0 && handle != 0xFFFFFFFF) {
             uint32_t idx = handle & 0x7FFF;
@@ -150,18 +156,18 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
                 uintptr_t localPawn = ReadMem<uintptr_t>(entry + 120 * (idx & 0x1FF));
                 if (localPawn) {
                     
-                    // Читаем координаты для лога
-                    Vector3 pos = ReadMem<Vector3>(localPawn + 0x127C); // Самый частый оффсет
-                    if (pos.x == 0.0f) pos = ReadMem<Vector3>(localPawn + 0x1324); // Запасной
-
-                    static int tick = 0;
-                    if (tick++ % 20 == 0 && std::isfinite(pos.x) && pos.x != 0.0f) {
-                        LogMessage("[Target Locked] POS: X=%.1f Y=%.1f\n", pos.x, pos.y);
+                    uintptr_t sceneNode = ReadMem<uintptr_t>(localPawn + offsets::m_pGameSceneNode);
+                    if (sceneNode) {
+                        Vector3 pos = ReadMem<Vector3>(sceneNode + offsets::m_vecAbsOrigin);
+                        static int tick = 0;
+                        if (tick++ % 20 == 0 && std::isfinite(pos.x) && pos.x != 0.0f) {
+                            LogMessage("[Target Locked] POS: X=%.1f Y=%.1f\n", pos.x, pos.y);
+                        }
                     }
 
                     // ТРИГГЕРБОТ
-                    if (GetAsyncKeyState(VK_CAPITAL) & 0x8000) { // Зажат CapsLock
-                        int crossId = ReadMem<int>(localPawn + 0x1544);
+                    if (GetAsyncKeyState(VK_CAPITAL) & 0x8000) { 
+                        int crossId = ReadMem<int>(localPawn + offsets::m_iIDEntIndex);
                         if (crossId > 0 && crossId <= 64) {
                             LogMessage("[Triggerbot] Firing! Enemy ID: %d\n", crossId);
                             mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
@@ -171,7 +177,7 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
                         }
                     }
                 } else {
-                    dyn_m_hPawn = 0; // Игрок умер или вышел — сброс брутфорсера
+                    dyn_m_hPawn = 0; 
                 }
             } else {
                 dyn_m_hPawn = 0;
