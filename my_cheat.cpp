@@ -13,8 +13,8 @@ namespace constants {
 struct SchemaClassFieldData_t {
     const char* m_name;
     void* m_type;
-    short m_offset;
-    char pad_0012[14];
+    int m_offset; // Изменено на 4 байта (int32_t) для надежности
+    char pad_0014[12];
 };
 
 struct SchemaClassInfo_t {
@@ -73,7 +73,8 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
         MEMORY_BASIC_INFORMATION mbi;
         if (!VirtualQuery(reinterpret_cast<LPCVOID>(curr), &mbi, sizeof(mbi))) break;
 
-        if (mbi.State == MEM_COMMIT && (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
+        // Ограничили сканирование только исполняемыми секциями (.text)
+        if (mbi.State == MEM_COMMIT && (mbi.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
             BYTE* region = reinterpret_cast<BYTE*>(mbi.BaseAddress);
             SIZE_T size = mbi.RegionSize;
 
@@ -101,30 +102,38 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
 }
 
 namespace schema {
+    // Безопасный шаблон для вызова виртуальных функций без UB
+    template <typename T>
+    inline T GetVFunc(void* inst, int index) {
+        return reinterpret_cast<T>((*reinterpret_cast<void***>(inst))[index]);
+    }
+
     uintptr_t GetOffset(std::ofstream& log, const char* moduleName, const char* className, const char* fieldName) {
         HMODULE hSch = GetModuleHandleA("schemasystem.dll");
         if (!hSch) return 0;
         
-        auto CreateInterface = (CreateInterfaceFn)GetProcAddress(hSch, "CreateInterface");
+        auto CreateInterface = reinterpret_cast<CreateInterfaceFn>(GetProcAddress(hSch, "CreateInterface"));
         if (!CreateInterface) return 0;
 
-        uintptr_t schemaSystem = (uintptr_t)CreateInterface("SchemaSystem_001", nullptr);
+        void* schemaSystem = CreateInterface("SchemaSystem_001", nullptr);
         if (!schemaSystem) return 0;
 
-        using GetTypeScope_t = uintptr_t(__fastcall*)(uintptr_t, const char*, void*);
-        uintptr_t typeScope = (*(GetTypeScope_t**)schemaSystem)[constants::SchemaSystemIndex](schemaSystem, moduleName, nullptr);
+        using GetTypeScope_t = void*(__fastcall*)(void*, const char*, void*);
+        auto getScope = GetVFunc<GetTypeScope_t>(schemaSystem, constants::SchemaSystemIndex);
+        void* typeScope = getScope(schemaSystem, moduleName, nullptr);
         if (!typeScope) return 0;
 
-        using FindDeclaredClass_t = void(__fastcall*)(uintptr_t, SchemaClassInfo_t**, const char*);
-        SchemaClassInfo_t* classInfo = nullptr;
+        using FindDeclaredClass_t = void(__fastcall*)(void*, SchemaClassInfo_t**, const char*);
+        auto findClass = GetVFunc<FindDeclaredClass_t>(typeScope, constants::FindClassIndex);
         
-        (*(FindDeclaredClass_t**)typeScope)[constants::FindClassIndex](typeScope, &classInfo, className);
+        SchemaClassInfo_t* classInfo = nullptr;
+        findClass(typeScope, &classInfo, className);
         
         if (classInfo && classInfo->m_fields) {
             for (int i = 0; i < classInfo->m_fields_count; i++) {
                 SchemaClassFieldData_t& field = classInfo->m_fields[i];
                 if (field.m_name && strcmp(field.m_name, fieldName) == 0) {
-                    return field.m_offset;
+                    return static_cast<uintptr_t>(field.m_offset);
                 }
             }
         }
