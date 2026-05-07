@@ -1,44 +1,52 @@
 #include <windows.h>
 #include <stdint.h>
 
-namespace offsets {
-    // Используем адрес игрока, который ТЫ нашел в логе (0x197ee50)
-    // Это надежнее, чем dwLocalPlayerPawn, который у нас не работал
-    constexpr uintptr_t dwLocalPlayerPawn = 0x197ee50; 
-    
-    // Пробуем оффсет прицела, который дал ГПТ
-    constexpr uintptr_t m_iIDEntIndex = 0x1458; 
-    
-    // Запасной оффсет прицела (на всякий случай)
-    constexpr uintptr_t m_iIDEntIndex_alt = 0x1544;
-}
+// Оффсеты прицела, которые дает GPT и другие дамперы
+uintptr_t crossOffsets[] = { 0x1458, 0x1544, 0x13C8, 0x13A8 };
 
 DWORD WINAPI FinalBattleThread(LPVOID lpParam) {
     uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
-    if (!client) return 0;
+    
+    // Мы не используем статичный оффсет, мы будем искать игрока "на лету"
+    uintptr_t localPlayer = 0;
 
     while (true) {
-        // Читаем игрока по адресу из ТВОЕГО лога
-        uintptr_t localPlayer = *reinterpret_cast<uintptr_t*>(client + offsets::dwLocalPlayerPawn);
-        
-        if (localPlayer > 0x1000) {
-            // Проверяем оффсет от ГПТ (0x1458)
-            int id = *reinterpret_cast<int*>(localPlayer + offsets::m_iIDEntIndex);
-            
-            // Если не сработало, проверяем второй (0x1544)
-            if (id <= 0 || id > 64) {
-                id = *reinterpret_cast<int*>(localPlayer + offsets::m_iIDEntIndex_alt);
+        // Если адрес потерялся или не найден - ищем его (твоим методом 100 HP)
+        if (localPlayer == 0) {
+            for (uintptr_t off = 0x1800000; off <= 0x2500000; off += 8) {
+                uintptr_t* potential = (uintptr_t*)(client + off);
+                if (!IsBadReadPtr(potential, sizeof(uintptr_t))) {
+                    uintptr_t pawn = *potential;
+                    if (pawn > 0x1000000 && !IsBadReadPtr((void*)(pawn + 0x334), 4)) {
+                        if (*(int*)(pawn + 0x334) == 100) {
+                            localPlayer = pawn; // НАШЛИ!
+                            break;
+                        }
+                    }
+                }
             }
-
-            // Если кто-то в прицеле - БЬЕМ!
-            if (id > 0 && id <= 64) {
-                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-                Sleep(10);
-                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-                Sleep(200); 
+        } else {
+            // Если игрок найден - работаем по прицелу
+            for (uintptr_t crossOff : crossOffsets) {
+                if (!IsBadReadPtr((void*)(localPlayer + crossOff), 4)) {
+                    int id = *(int*)(localPlayer + crossOff);
+                    if (id > 0 && id <= 64) {
+                        // КЛИК!
+                        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+                        Sleep(10);
+                        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                        Sleep(200);
+                        break;
+                    }
+                }
+            }
+            
+            // Проверка: жив ли еще этот адрес? (Если ХП не 100 или адрес битый - сброс)
+            if (IsBadReadPtr((void*)(localPlayer + 0x334), 4) || *(int*)(localPlayer + 0x334) != 100) {
+                localPlayer = 0;
             }
         }
-        Sleep(1); 
+        Sleep(1);
     }
     return 0;
 }
