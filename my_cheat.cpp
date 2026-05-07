@@ -1,51 +1,67 @@
 #include <windows.h>
+#include <fstream>
 #include <stdint.h>
 
+// Оффсеты, которые мы ПРОВЕРЯЕМ (на основе самых свежих дампов)
 namespace offsets {
-    // ВНИМАНИЕ: Эти цифры из самого свежего дампа (проверь свой offsets.json еще раз!)
-    constexpr uintptr_t dwLocalPlayerPawn = 0x1830A18; // Обновленный базовый оффсет
-    constexpr uintptr_t m_iIDEntIndex = 0x1544;       // ID в прицеле (стабильно)
+    constexpr uintptr_t dwLocalPlayerPawn = 0x1830A18; // Базовый адрес игрока
+    constexpr uintptr_t m_iIDEntIndex = 0x1544;       // ID в прицеле
+    constexpr uintptr_t m_iHealth = 0x334;            // Здоровье
 }
 
-DWORD WINAPI SafeThread(LPVOID lpParam) {
+DWORD WINAPI DiagnosticThread(LPVOID lpParam) {
+    std::ofstream log("CS2_Final_Log.txt", std::ios::app);
     uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
-    if (!client) return 0;
+    
+    log << "--- DIAGNOSTIC START (Safe Mode) ---\n";
+    log << "Client.dll base: " << std::hex << client << "\n";
+    log.flush();
 
     while (true) {
-        // Читаем через ReadProcessMemory (даже внутри процесса это надежнее)
         uintptr_t localPlayer = 0;
-        SIZE_T bytesRead = 0;
-        
-        // Используем GetCurrentProcess() для безопасности
-        if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(client + offsets::dwLocalPlayerPawn), &localPlayer, sizeof(localPlayer), &bytesRead) && localPlayer) {
+        SIZE_T br = 0;
+
+        // 1. Проверяем, находим ли мы игрока
+        if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(client + offsets::dwLocalPlayerPawn), &localPlayer, sizeof(localPlayer), &br) && localPlayer) {
             
-            int crosshairId = 0;
-            if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(localPlayer + offsets::m_iIDEntIndex), &crosshairId, sizeof(crosshairId), &bytesRead)) {
+            int hp = 0;
+            int crossId = 0;
+            
+            ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(localPlayer + offsets::m_iHealth), &hp, sizeof(hp), &br);
+            ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(localPlayer + offsets::m_iIDEntIndex), &crossId, sizeof(crossId), &br);
+
+            // Пишем в лог только когда данные меняются
+            static int lastId = -1;
+            if (crossId != lastId) {
+                log << "Player Found! HP: " << std::dec << hp << " | Crosshair ID: " << crossId << "\n";
+                log.flush();
+                lastId = crossId;
+            }
+
+            // Если кто-то в прицеле - попробуем сделать ПИК (звук), чтобы ты знал без лога
+            if (crossId > 0 && crossId <= 64) {
+                Beep(1000, 100); 
                 
-                // Если кто-то в прицеле
-                if (crosshairId > 0 && crosshairId <= 64) {
-                    // Используем клик через SendInput (самый близкий к реальности)
-                    INPUT input[2] = { 0 };
-                    input[0].type = input[1].type = INPUT_MOUSE;
-                    input[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-                    input[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
-                    
-                    SendInput(2, input, sizeof(INPUT));
-                    Sleep(200); // Чтобы не забанили за макрос
-                }
+                // Пробуем выстрел через простой mouse_event раз SendInput мог не сработать
+                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+                Sleep(10);
+                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+            }
+        } else {
+            // Если даже игрока не нашел - значит dwLocalPlayerPawn неверный
+            static bool errorLogged = false;
+            if (!errorLogged) {
+                log << "ERROR: LocalPlayer NOT FOUND. Wrong dwLocalPlayerPawn offset!\n";
+                log.flush();
+                errorLogged = true;
             }
         }
-        Sleep(10); // Даем процессору "дышать"
+        Sleep(100); 
     }
     return 0;
 }
 
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
-    if (r == DLL_PROCESS_ATTACH) {
-        // Мы НЕ создаем поток через CreateThread, мы вызываем его через QueueUserAPC
-        // или просто запускаем аккуратно
-        HANDLE hThread = CreateThread(NULL, 0, SafeThread, NULL, 0, NULL);
-        if (hThread) CloseHandle(hThread);
-    }
+    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, DiagnosticThread, 0, 0, 0));
     return TRUE;
 }
