@@ -21,6 +21,25 @@ namespace offsets {
     uintptr_t m_vOldOrigin = 0;
 }
 
+// Bulletproof Logger: Writes to both DebugView and File with immediate flush
+void LogMessage(const char* fmt, ...) {
+    char buffer[256];
+    va_list args;
+    va_start(args, fmt);
+    vsprintf_s(buffer, fmt, args);
+    va_end(args);
+
+    // 1. Output to System Debugger
+    OutputDebugStringA(buffer);
+
+    // 2. Output to File with immediate close to prevent data loss on crash
+    FILE* f = nullptr;
+    if (fopen_s(&f, "CS2_Final_Log.txt", "a+") == 0 && f) {
+        fprintf(f, "%s", buffer);
+        fclose(f);
+    }
+}
+
 template <typename T>
 T ReadMem(uintptr_t addr) {
     if (!addr || addr < 0x10000 || addr > 0x7FFFFFFFFFFF) return T();
@@ -72,19 +91,14 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     while (curr < end - b.size()) {
         MEMORY_BASIC_INFORMATION mbi;
         if (!VirtualQuery(reinterpret_cast<LPCVOID>(curr), &mbi, sizeof(mbi))) break;
-
         if (mbi.State == MEM_COMMIT && (mbi.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
             BYTE* region = reinterpret_cast<BYTE*>(mbi.BaseAddress);
             SIZE_T size = mbi.RegionSize;
-
             if (reinterpret_cast<uintptr_t>(region) < curr) {
                 size -= (curr - reinterpret_cast<uintptr_t>(region));
                 region = reinterpret_cast<BYTE*>(curr);
             }
-            if (reinterpret_cast<uintptr_t>(region) + size > end) {
-                size = end - reinterpret_cast<uintptr_t>(region);
-            }
-
+            if (reinterpret_cast<uintptr_t>(region) + size > end) size = end - reinterpret_cast<uintptr_t>(region);
             if (size >= b.size()) {
                 for (SIZE_T j = 0; j <= size - b.size(); ++j) {
                     bool f = true;
@@ -110,42 +124,29 @@ namespace schema {
     uintptr_t GetOffset(const char* moduleName, const char* className, const char* fieldName) {
         HMODULE hSch = GetModuleHandleA("schemasystem.dll");
         if (!hSch) return 0;
-        
         auto CreateInterface = reinterpret_cast<CreateInterfaceFn>(GetProcAddress(hSch, "CreateInterface"));
         if (!CreateInterface) return 0;
-
         void* schemaSystem = CreateInterface("SchemaSystem_001", nullptr);
         if (!schemaSystem) return 0;
-
         using GetTypeScope_t = void*(__fastcall*)(void*, const char*, void*);
         auto getScope = GetVFunc<GetTypeScope_t>(schemaSystem, constants::SchemaSystemIndex);
-        if (!getScope) return 0;
-
         void* typeScope = getScope(schemaSystem, moduleName, nullptr);
         if (!typeScope) return 0;
-
         using FindDeclaredClass_t = void(__fastcall*)(void*, void**, const char*);
         auto findClass = GetVFunc<FindDeclaredClass_t>(typeScope, constants::FindClassIndex);
-        if (!findClass) return 0;
-        
         void* classInfo = nullptr;
         findClass(typeScope, &classInfo, className);
         if (!classInfo) return 0;
-
         short fieldsCount = ReadMem<short>(reinterpret_cast<uintptr_t>(classInfo) + 0x1C);
         uintptr_t fieldsPtr = ReadMem<uintptr_t>(reinterpret_cast<uintptr_t>(classInfo) + 0x28);
-
         if (fieldsCount > 0 && fieldsCount < 1000 && fieldsPtr) {
             for (int i = 0; i < fieldsCount; i++) {
                 uintptr_t fieldAddr = fieldsPtr + (i * 0x20); 
                 uintptr_t namePtr = ReadMem<uintptr_t>(fieldAddr);
                 int offset = ReadMem<int>(fieldAddr + 0x10);
-
                 char nameBuf[128] = {0};
                 if (SafeReadString(namePtr, nameBuf, sizeof(nameBuf))) {
-                    if (strcmp(nameBuf, fieldName) == 0) {
-                        return static_cast<uintptr_t>(offset);
-                    }
+                    if (strcmp(nameBuf, fieldName) == 0) return static_cast<uintptr_t>(offset);
                 }
             }
         }
@@ -156,7 +157,7 @@ namespace schema {
 DWORD WINAPI MainThread(LPVOID lpParam) {
     while (!GetModuleHandleA("client.dll") || !GetModuleHandleA("schemasystem.dll")) Sleep(500);
 
-    OutputDebugStringA("[CS2] Autonomous Cheat Started.\n");
+    LogMessage("[CS2] Autonomous System Online.\n");
 
     offsets::dwLocalPlayerController = ResolveRIP(FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 4E"), 3, 7);
     offsets::dwEntityList = ResolveRIP(FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 ? 8B FA C1 EB"), 3, 7);
@@ -164,11 +165,12 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
     offsets::m_vOldOrigin = schema::GetOffset("client.dll", "C_BasePlayerPawn", "m_vOldOrigin");
 
     if (!offsets::dwLocalPlayerController || !offsets::dwEntityList || !offsets::m_hPawn || !offsets::m_vOldOrigin) {
-        OutputDebugStringA("[CS2] [!] Critical offsets missing. Exiting thread.\n");
+        LogMessage("[CS2] [!] Failure. LP:%p EL:%p P:0x%x O:0x%x\n", 
+            (void*)offsets::dwLocalPlayerController, (void*)offsets::dwEntityList, (uint32_t)offsets::m_hPawn, (uint32_t)offsets::m_vOldOrigin);
         FreeLibraryAndExitThread(static_cast<HMODULE>(lpParam), 1);
     }
 
-    OutputDebugStringA("[CS2] [+] All offsets found. Tracking...\n");
+    LogMessage("[CS2] [+] Target Acquired. m_hPawn: 0x%x\n", (uint32_t)offsets::m_hPawn);
 
     while (!(GetAsyncKeyState(VK_END) & 0x8000)) {
         uintptr_t ctrl = ReadMem<uintptr_t>(offsets::dwLocalPlayerController);
@@ -178,33 +180,27 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
         if (handle == 0 || handle == 0xFFFFFFFF) { Sleep(100); continue; }
 
         uintptr_t list = ReadMem<uintptr_t>(offsets::dwEntityList);
-        if (!list) { Sleep(100); continue; }
-
         uintptr_t entryBase = ReadMem<uintptr_t>(list + 0x8 * ((handle & 0x7FFF) >> 9) + 0x10);
-        if (!entryBase) { Sleep(100); continue; }
-
         uintptr_t pawn = ReadMem<uintptr_t>(entryBase + constants::EntityListEntrySize * (handle & 0x1FF));
-        if (!pawn) { Sleep(100); continue; }
-
-        Vector3 pos = ReadMem<Vector3>(pawn + offsets::m_vOldOrigin);
-        if (pos.x != 0.f || pos.y != 0.f || pos.z != 0.f) {
-            char buffer[128];
-            sprintf_s(buffer, "[CS2] POS: X=%.2f Y=%.2f Z=%.2f\n", pos.x, pos.y, pos.z);
-            OutputDebugStringA(buffer);
+        
+        if (pawn) {
+            Vector3 pos = ReadMem<Vector3>(pawn + offsets::m_vOldOrigin);
+            if (pos.x != 0.f || pos.y != 0.f) {
+                LogMessage("POS: %.2f %.2f %.2f\n", pos.x, pos.y, pos.z);
+            }
         }
-
         Sleep(1000);
     }
 
-    OutputDebugStringA("[CS2] Unloading...\n");
+    LogMessage("[CS2] Unloading.\n");
     FreeLibraryAndExitThread(static_cast<HMODULE>(lpParam), 0);
 }
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
-        HANDLE ht = CreateThread(nullptr, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(MainThread), hModule, 0, nullptr);
-        if (ht) CloseHandle(ht);
+        if (HANDLE ht = CreateThread(nullptr, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(MainThread), hModule, 0, nullptr)) 
+            CloseHandle(ht);
     }
     return TRUE;
 }
