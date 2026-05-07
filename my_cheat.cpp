@@ -3,9 +3,9 @@
 #include <string>
 #include <stdint.h>
 #include <cstdio>
+#include <cmath>
 
 namespace offsets {
-    // Железобетонные оффсеты базовых классов, которые Valve не меняют
     constexpr uintptr_t m_pGameSceneNode = 0x328; 
     constexpr uintptr_t m_vecAbsOrigin = 0xC8;   
     constexpr uintptr_t m_iIDEntIndex = 0x1544; 
@@ -83,8 +83,13 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     return 0;
 }
 
+// Проверка на адекватность координат (Sanity Check)
+bool IsValidCoordinate(float val) {
+    return std::isfinite(val) && val > -15000.0f && val < 15000.0f;
+}
+
 DWORD WINAPI MainThread(LPVOID lpParam) {
-    LogMessage("\n[CS2] --- V107 HEURISTIC ENGINE ---\n");
+    LogMessage("\n[CS2] --- V108 FILTERED HEURISTIC ENGINE ---\n");
     
     while (!GetModuleHandleA("client.dll")) Sleep(1000);
 
@@ -112,14 +117,13 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
             continue;
         }
 
-        // Этап 1: Автоматический поиск m_hPawn (Эвристика)
         if (dynamicPawnOffset == 0) {
-            for (int off = 0x500; off < 0x900; off += 4) {
+            for (int off = 0x500; off < 0x850; off += 4) {
                 uint32_t handle = ReadMem<uint32_t>(controller + off);
                 if (handle == 0 || handle == 0xFFFFFFFF) continue;
                 
                 uint32_t idx = handle & 0x7FFF;
-                if (idx == 0 || idx > 2000) continue;
+                if (idx == 0 || idx > 64) continue; // У живого игрока индекс обычно от 1 до 64, отсекаем левые хендлы
 
                 uintptr_t entry = ReadMem<uintptr_t>(list + 0x8 * (idx >> 9) + 0x10);
                 if (!entry) continue;
@@ -130,7 +134,9 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
                 uintptr_t sceneNode = ReadMem<uintptr_t>(pawn + offsets::m_pGameSceneNode);
                 if (sceneNode && sceneNode > 0x10000) {
                     Vector3 pos = ReadMem<Vector3>(sceneNode + offsets::m_vecAbsOrigin);
-                    if (pos.x != 0.0f || pos.y != 0.0f) {
+                    
+                    // Жесткий фильтр на мусорные координаты
+                    if ((pos.x != 0.0f || pos.y != 0.0f) && IsValidCoordinate(pos.x) && IsValidCoordinate(pos.y)) {
                         dynamicPawnOffset = off;
                         LogMessage("[Heuristic] Locked m_hPawn at dynamic offset: 0x%X\n", off);
                         break;
@@ -140,13 +146,12 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
 
             if (dynamicPawnOffset == 0) {
                 static bool scanLog = false;
-                if (!scanLog) { LogMessage("[Scan] Searching for valid Pawn... (Spawn into a match!)\n"); scanLog = true; }
+                if (!scanLog) { LogMessage("[Scan] Filtering garbage... Waiting for valid player spawn.\n"); scanLog = true; }
                 Sleep(1000);
                 continue;
             }
         }
 
-        // Этап 2: Чтение данных по найденному смещению
         bool validTarget = false;
         uint32_t handle = ReadMem<uint32_t>(controller + dynamicPawnOffset);
         
@@ -159,13 +164,19 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
                     uintptr_t sceneNode = ReadMem<uintptr_t>(pawn + offsets::m_pGameSceneNode);
                     if (sceneNode) {
                         Vector3 pos = ReadMem<Vector3>(sceneNode + offsets::m_vecAbsOrigin);
+                        
+                        // Если в процессе игры координаты сходят с ума - сбрасываем оффсет
+                        if (!IsValidCoordinate(pos.x) || !IsValidCoordinate(pos.y)) {
+                            dynamicPawnOffset = 0;
+                            continue;
+                        }
+
                         static int tick = 0;
                         if (tick++ % 10 == 0) {
                             LogMessage("POS: X=%.1f Y=%.1f Z=%.1f\n", pos.x, pos.y, pos.z);
                         }
                         validTarget = true;
 
-                        // Триггербот (CapsLock)
                         if (GetAsyncKeyState(VK_CAPITAL) & 0x8000) {
                             int crosshairId = ReadMem<int>(pawn + offsets::m_iIDEntIndex);
                             if (crosshairId > 0 && crosshairId <= 64) {
@@ -180,7 +191,6 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
             }
         }
 
-        // Если игрок умер или отключился — сбрасываем эвристику для нового поиска
         if (!validTarget) {
             static bool resetLog = false;
             if (!resetLog) { LogMessage("[Heuristic] Target lost. Rescanning...\n"); resetLog = true; }
