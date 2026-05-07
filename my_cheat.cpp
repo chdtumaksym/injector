@@ -12,19 +12,20 @@ namespace constants {
 }
 
 struct SchemaClassFieldData_t {
-    const char* m_name;
-    void* m_type;
-    short m_offset;
-    char pad_0012[14];
+    const char* m_name; // 0x00
+    void* m_type;       // 0x08
+    short m_offset;     // 0x10
+    char pad_0012[14];  // 0x12
 };
 
 struct SchemaClassInfo_t {
-    char pad_0000[8];
-    const char* m_name;
-    char pad_0010[24];
-    short m_fields_count;
-    char pad_002A[6];
-    SchemaClassFieldData_t* m_fields;
+    void* m_vtable;             // 0x00
+    const char* m_name;         // 0x08
+    const char* m_module_name;  // 0x10
+    int m_size;                 // 0x18
+    short m_fields_count;       // 0x1C
+    char pad_1E[10];            // 0x1E
+    SchemaClassFieldData_t* m_fields; // 0x28
 };
 
 struct Vector3 { float x, y, z; };
@@ -38,7 +39,7 @@ namespace offsets {
     uintptr_t m_vOldOrigin = 0;
 }
 
-// Memory Safety: Fast and relatively safe
+// Memory Safety via VirtualQuery
 template <typename T>
 T ReadMem(uintptr_t addr) {
     if (addr < 0x10000 || addr > 0x7FFFFFFFFFFF) return T();
@@ -55,20 +56,16 @@ uintptr_t ResolveRIP(uintptr_t inst, uint32_t offset, uint32_t size) {
     return inst + size + *reinterpret_cast<int32_t*>(inst + offset);
 }
 
-// Optimized Scanner
+// Secure Pattern Scanner
 uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(moduleName));
     if (!base) return 0;
 
-    std::vector<int> patternBytes;
+    std::vector<int> b;
     char* start_p = const_cast<char*>(pattern);
     for (char* curr = start_p; curr < start_p + strlen(pattern); ++curr) {
-        if (*curr == '?') { 
-            curr++; if (*curr == '?') curr++; 
-            patternBytes.push_back(-1); 
-        } else {
-            patternBytes.push_back(static_cast<int>(strtoul(curr, &curr, 16)));
-        }
+        if (*curr == '?') { curr++; if (*curr == '?') curr++; b.push_back(-1); }
+        else b.push_back(static_cast<int>(strtoul(curr, &curr, 16)));
     }
 
     PIMAGE_NT_HEADERS nt = reinterpret_cast<PIMAGE_NT_HEADERS>(base + reinterpret_cast<PIMAGE_DOS_HEADER>(base)->e_lfanew);
@@ -78,17 +75,14 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
         if (sect->Characteristics & (IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE)) {
             BYTE* s = reinterpret_cast<BYTE*>(base + sect->VirtualAddress);
             DWORD sz = sect->Misc.VirtualSize;
-            if (sz < patternBytes.size()) continue;
+            if (sz < b.size()) continue;
 
-            for (DWORD j = 0; j < sz - patternBytes.size(); ++j) {
-                bool found = true;
-                for (size_t k = 0; k < patternBytes.size(); ++k) {
-                    if (patternBytes[k] != -1 && s[j + k] != static_cast<BYTE>(patternBytes[k])) {
-                        found = false;
-                        break;
-                    }
+            for (DWORD j = 0; j < sz - b.size(); ++j) {
+                bool f = true;
+                for (size_t k = 0; k < b.size(); ++k) {
+                    if (b[k] != -1 && s[j + k] != static_cast<BYTE>(b[k])) { f = false; break; }
                 }
-                if (found) return reinterpret_cast<uintptr_t>(&s[j]);
+                if (f) return reinterpret_cast<uintptr_t>(&s[j]);
             }
         }
     }
@@ -96,7 +90,7 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
 }
 
 namespace schema {
-    uintptr_t GetOffset(const char* moduleName, const char* className, const char* fieldName) {
+    uintptr_t GetOffset(std::ofstream& log, const char* moduleName, const char* className, const char* fieldName) {
         HMODULE hSch = GetModuleHandleA("schemasystem.dll");
         if (!hSch) return 0;
         
@@ -106,18 +100,19 @@ namespace schema {
         uintptr_t schemaSystem = (uintptr_t)CreateInterface("SchemaSystem_001", nullptr);
         if (!schemaSystem) return 0;
 
-        // Use virtual function calls with caution
-        auto GetTypeScope = (*(uintptr_t(__fastcall***)(uintptr_t, const char*))schemaSystem)[constants::SchemaSystemIndex];
-        uintptr_t typeScope = GetTypeScope(schemaSystem, moduleName);
+        // Correct calling convention for GetTypeScope
+        using GetTypeScope_t = uintptr_t(__fastcall*)(uintptr_t, const char*, void*);
+        uintptr_t typeScope = (*(GetTypeScope_t**)schemaSystem)[constants::SchemaSystemIndex](schemaSystem, moduleName, nullptr);
         if (!typeScope) return 0;
 
-        SchemaClassInfo_t* classInfo = nullptr;
-        auto FindDeclaredClass = (*(void(__fastcall***)(uintptr_t, SchemaClassInfo_t**, const char*))typeScope)[constants::FindClassIndex];
-        FindDeclaredClass(typeScope, &classInfo, className);
+        // Correct calling convention for FindDeclaredClass
+        using FindDeclaredClass_t = SchemaClassInfo_t*(__fastcall*)(uintptr_t, const char*);
+        SchemaClassInfo_t* classInfo = (*(FindDeclaredClass_t**)typeScope)[constants::FindClassIndex](typeScope, className);
         
         if (classInfo && classInfo->m_fields) {
+            log << "[Schema] Found class: " << className << " fields: " << classInfo->m_fields_count << "\n";
             for (int i = 0; i < classInfo->m_fields_count; i++) {
-                auto& field = classInfo->m_fields[i];
+                SchemaClassFieldData_t& field = classInfo->m_fields[i];
                 if (field.m_name && strcmp(field.m_name, fieldName) == 0) {
                     return field.m_offset;
                 }
@@ -129,42 +124,38 @@ namespace schema {
 
 DWORD WINAPI MainThread(LPVOID lpParam) {
     std::ofstream log("CS2_Main_Log.txt", std::ios::app);
-    log << "[+] Session started. Waiting for modules...\n";
-    log.flush();
+    log << "[+] Waiting for modules...\n"; log.flush();
 
-    // Wait for client.dll to be fully loaded
-    while (!GetModuleHandleA("client.dll") || !GetModuleHandleA("schemasystem.dll")) {
-        Sleep(500);
-    }
+    while (!GetModuleHandleA("client.dll") || !GetModuleHandleA("schemasystem.dll")) Sleep(500);
 
-    // Dynamic Initialization with safety checks
+    log << "[+] Finding Base Addresses...\n";
     offsets::dwLocalPlayerController = ResolveRIP(FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 4E"), 3, 7);
     offsets::dwEntityList = ResolveRIP(FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 40 8B FA C1 EB"), 3, 7);
     
-    offsets::m_hPawn = schema::GetOffset("client.dll", "CBasePlayerController", "m_hPawn");
-    offsets::m_vOldOrigin = schema::GetOffset("client.dll", "C_BasePlayerPawn", "m_vOldOrigin");
+    log << "[+] Parsing Schema System...\n";
+    offsets::m_hPawn = schema::GetOffset(log, "client.dll", "CBasePlayerController", "m_hPawn");
+    offsets::m_vOldOrigin = schema::GetOffset(log, "client.dll", "C_BasePlayerPawn", "m_vOldOrigin");
 
     if (!offsets::dwLocalPlayerController || !offsets::dwEntityList || !offsets::m_hPawn || !offsets::m_vOldOrigin) {
-        log << "[!] Critical error: Some offsets not found!\n";
+        log << "[!] Critical error: Check log for missing offsets!\n";
         log << "LP: " << std::hex << offsets::dwLocalPlayerController << " EL: " << offsets::dwEntityList << "\n";
         log << "m_hPawn: 0x" << offsets::m_hPawn << " Origin: 0x" << offsets::m_vOldOrigin << "\n";
         log.flush();
         FreeLibraryAndExitThread(static_cast<HMODULE>(lpParam), 1);
     }
 
-    log << "[+] Initialization successful. Polling coordinates...\n";
-    log.flush();
+    log << "[+] Ready. Tracking coordinates...\n"; log.flush();
 
     while (!(GetAsyncKeyState(VK_END) & 0x8000)) {
         uintptr_t ctrl = ReadMem<uintptr_t>(offsets::dwLocalPlayerController);
         if (ctrl) {
-            uint32_t h = ReadMem<uint32_t>(ctrl + offsets::m_hPawn);
-            if (h != 0 && h != 0xFFFFFFFF) {
+            uint32_t handle = ReadMem<uint32_t>(ctrl + offsets::m_hPawn);
+            if (handle != 0 && handle != 0xFFFFFFFF) {
                 uintptr_t list = ReadMem<uintptr_t>(offsets::dwEntityList);
                 if (list) {
-                    uintptr_t entry = ReadMem<uintptr_t>(list + 0x8 * ((h & 0x7FFF) >> 9) + 0x10);
+                    uintptr_t entry = ReadMem<uintptr_t>(list + 0x8 * ((handle & 0x7FFF) >> 9) + 0x10);
                     if (entry) {
-                        uintptr_t pawn = ReadMem<uintptr_t>(entry + constants::EntityListEntrySize * (h & 0x1FF));
+                        uintptr_t pawn = ReadMem<uintptr_t>(entry + constants::EntityListEntrySize * (handle & 0x1FF));
                         if (pawn) {
                             Vector3 pos = ReadMem<Vector3>(pawn + offsets::m_vOldOrigin);
                             if (pos.x != 0.0f || pos.y != 0.0f) {
@@ -176,11 +167,10 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
                 }
             }
         }
-        Sleep(500);
+        Sleep(1000);
     }
 
-    log << "[!] Unloading...\n";
-    log.close();
+    log << "[!] Unloading...\n"; log.close();
     FreeLibraryAndExitThread(static_cast<HMODULE>(lpParam), 0);
 }
 
