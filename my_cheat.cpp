@@ -5,14 +5,14 @@
 #include <cstdio>
 
 namespace offsets {
-    // Обновленные оффсеты. Если 0x60C не сработает, попробуй 0x5FC (но судя по твоему логу, он не подошел)
-    constexpr uintptr_t m_hPawn = 0x60C;        
+    // Самые стабильные оффсеты для прямого чтения из пешки (Pawn)
     constexpr uintptr_t m_vOldOrigin = 0x127C;  
-    constexpr uintptr_t m_iIDEntIndex = 0x1544; // Корректный оффсет для Triggerbot (CrosshairID)
+    constexpr uintptr_t m_iIDEntIndex = 0x1544; // CrosshairID
 }
 
 struct Vector3 { float x, y, z; };
 
+// Защищенное чтение памяти
 template <typename T>
 T ReadMem(uintptr_t addr) {
     if (!addr || addr < 0x10000 || addr > 0x7FFFFFFFFFFF) return T();
@@ -84,72 +84,60 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
 }
 
 DWORD WINAPI MainThread(LPVOID lpParam) {
-    LogMessage("[CS2] --- V104 OFFSET RECOVERY ---\n");
+    LogMessage("[CS2] --- V105 THE NUCLEAR FIX ---\n");
     
     while (!GetModuleHandleA("client.dll")) Sleep(1000);
 
-    uintptr_t lpPattern = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 4E");
-    uintptr_t elPattern = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 ? 8B FA C1 EB");
+    // ПРЯМОЙ ПОИСК LocalPlayerPawn
+    // Мы пропускаем контроллеры и листы сущностей, чтобы цепочка не ломалась
+    uintptr_t pawnPattern = FindPattern("client.dll", "48 8B 05 ? ? ? ? 48 85 C0 74 4F");
+    uintptr_t dwLocalPlayerPawn = ResolveRIP(pawnPattern, 3, 7);
 
-    uintptr_t dwLocalPlayerController = ResolveRIP(lpPattern, 3, 7);
-    uintptr_t dwEntityList = ResolveRIP(elPattern, 3, 7);
+    if (!dwLocalPlayerPawn) {
+        LogMessage("[!] Pattern scan failed. Trying secondary signature...\n");
+        pawnPattern = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 31");
+        dwLocalPlayerPawn = ResolveRIP(pawnPattern, 3, 7);
+    }
 
-    if (!dwLocalPlayerController || !dwEntityList) {
-        LogMessage("[!] CRITICAL: Pattern scan failed.\n");
+    if (!dwLocalPlayerPawn) {
+        LogMessage("[!] CRITICAL FAILURE: Could not find LocalPlayerPawn address.\n");
         return 1;
     }
 
-    LogMessage("[+] Core Addresses: Controller=%p, EntityList=%p\n", (void*)dwLocalPlayerController, (void*)dwEntityList);
+    LogMessage("[+] Pawn Address Resolved: %p\n", (void*)dwLocalPlayerPawn);
 
     while (!(GetAsyncKeyState(VK_END) & 0x8000)) {
-        uintptr_t controller = ReadMem<uintptr_t>(dwLocalPlayerController);
-        if (!controller) { Sleep(500); continue; }
+        // Читаем адрес нашей пешки (Pawn) напрямую
+        uintptr_t localPawn = ReadMem<uintptr_t>(dwLocalPlayerPawn);
+        
+        if (localPawn) {
+            Vector3 pos = ReadMem<Vector3>(localPawn + offsets::m_vOldOrigin);
+            
+            // Если мы получили вменяемые координаты
+            if (pos.x != 0.f || pos.y != 0.f) {
+                static int tick = 0;
+                if (tick++ % 10 == 0) { // Не спамим лог каждую секунду
+                    LogMessage("POS: X=%.1f Y=%.1f Z=%.1f\n", pos.x, pos.y, pos.z);
+                }
 
-        uint32_t handle = ReadMem<uint32_t>(controller + offsets::m_hPawn);
-        // В CS2 хендл игрока не может быть таким огромным как 0x7FFA
-        if (handle == 0 || handle == 0xFFFFFFFF || (handle & 0x7FFF) > 16384) {
-            static uint32_t lastHandle = 0;
-            if (handle != lastHandle) {
-                LogMessage("[Chain] Invalid Pawn Handle: 0x%X (Check m_hPawn offset)\n", handle);
-                lastHandle = handle;
+                // Триггербот на CapsLock
+                if (GetAsyncKeyState(VK_CAPITAL) & 0x8000) {
+                    int crosshairId = ReadMem<int>(localPawn + offsets::m_iIDEntIndex);
+                    // Если в прицеле игрок (ID 1-64)
+                    if (crosshairId > 0 && crosshairId <= 64) {
+                        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+                        Sleep(10);
+                        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                        Sleep(150);
+                    }
+                }
             }
-            Sleep(1000); continue;
+        } else {
+            static bool waitMsg = false;
+            if (!waitMsg) { LogMessage("[State] Waiting for player to spawn (Enter match)...\n"); waitMsg = true; }
         }
-
-        uintptr_t list = ReadMem<uintptr_t>(dwEntityList);
-        if (!list) { Sleep(500); continue; }
-
-        // Поиск в EntityList по индексу из хендла
-        uint32_t pIdx = handle & 0x7FFF;
-        uintptr_t entry = ReadMem<uintptr_t>(list + 0x8 * (pIdx >> 9) + 0x10);
-        if (!entry) {
-            LogMessage("[Chain] List Entry NULL for index %d\n", pIdx);
-            Sleep(1000); continue;
-        }
-
-        uintptr_t localPawn = ReadMem<uintptr_t>(entry + 120 * (pIdx & 0x1FF));
-        if (!localPawn) {
-            LogMessage("[Chain] Pawn pointer NULL at index %d\n", pIdx);
-            Sleep(1000); continue;
-        }
-
-        // Если все проверки пройдены - выводим данные
-        Vector3 pos = ReadMem<Vector3>(localPawn + offsets::m_vOldOrigin);
-        if (pos.x != 0.f) {
-            LogMessage("POS: %.1f %.1f %.1f\n", pos.x, pos.y, pos.z);
-        }
-
-        // Триггербот (CapsLock)
-        if (GetAsyncKeyState(VK_CAPITAL) & 0x8000) {
-            int crosshairId = ReadMem<int>(localPawn + offsets::m_iIDEntIndex);
-            if (crosshairId > 0 && crosshairId <= 100) {
-                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-                Sleep(20);
-                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-                Sleep(200);
-            }
-        }
-        Sleep(100); // Опрашиваем чаще для Triggerbot
+        
+        Sleep(50); // Частота опроса 20 раз в секунду
     }
 
     LogMessage("[!] Unloading.\n");
