@@ -1,47 +1,44 @@
 #include <windows.h>
+#include <fstream>
 #include <stdint.h>
+#include <vector>
 
-namespace offsets {
-    constexpr uintptr_t dwLocalPlayerPawn = 0x2057720; 
-    constexpr uintptr_t m_iIDEntIndex = 0x13C8; // Твой найденный оффсет
-    constexpr uintptr_t m_iTeamNum = 0x3CB;    // Команда
-}
-
-DWORD WINAPI FinalFarmThread(LPVOID lpParam) {
+DWORD WINAPI TruthThread(LPVOID lpParam) {
+    std::ofstream log("TRUTH_LOG.txt", std::ios::app);
     uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
-    if (!client) return 0;
+    uintptr_t localPlayer = 0;
+
+    log << "--- SEARCHING FOR THE TRUTH ---\n";
+    log.flush();
 
     while (true) {
-        // Проверяем, что окно CS2 активно, чтобы не кликать на рабочем столе
-        if (GetForegroundWindow() == FindWindowA("SDL_app", "Counter-Strike 2")) {
-            
-            uintptr_t localPlayer = *reinterpret_cast<uintptr_t*>(client + offsets::dwLocalPlayerPawn);
-            
-            if (localPlayer > 0x1000) {
-                int crossId = *reinterpret_cast<int*>(localPlayer + offsets::m_iIDEntIndex);
-
-                // Если в прицеле КТО-ТО есть
-                if (crossId > 0 && crossId <= 64) {
-                    // Здесь можно добавить проверку на команду, если будут оффсеты,
-                    // но для фарма в режиме "каждый сам за себя" этого уже хватит!
-                    
-                    mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-                    Sleep(20);
-                    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-                    
-                    Sleep(150); // Пауза, чтобы не палиться и не лагать
+        localPlayer = *(uintptr_t*)(client + 0x2057720); // Твой проверенный адрес
+        if (localPlayer > 0x1000) {
+            // Если ты зажал ПРАВУЮ кнопку мыши (как триггер для сканера)
+            if (GetAsyncKeyState(VK_RBUTTON)) {
+                log << "Scanning while RBUTTON is pressed...\n";
+                // Сканируем огромный кусок памяти игрока
+                for (uintptr_t i = 0x1300; i < 0x1600; i += 4) {
+                    int val = *(int*)(localPlayer + i);
+                    if (val > 0 && val <= 64) {
+                        log << "Potential ID Found! Offset: 0x" << std::hex << i << " Value: " << std::dec << val << "\n";
+                        
+                        // СРАЗУ СТРЕЛЯЕМ, чтобы ты понял, тот ли это адрес
+                        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+                        Sleep(10);
+                        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                    }
                 }
+                log.flush();
+                Sleep(500);
             }
         }
-        Sleep(1); 
+        Sleep(10);
     }
     return 0;
 }
 
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
-    if (r == DLL_PROCESS_ATTACH) {
-        HANDLE hThread = CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)FinalFarmThread, nullptr, 0, nullptr);
-        if (hThread) CloseHandle(hThread);
-    }
+    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, TruthThread, 0, 0, 0));
     return TRUE;
 }
