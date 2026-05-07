@@ -1,56 +1,39 @@
 #include <windows.h>
 #include <stdint.h>
 
-// Твои проверенные оффсеты
-namespace offsets {
-    constexpr uintptr_t dwLocalPlayerPawn = 0x2057720;
-    constexpr uintptr_t m_iIDEntIndex = 0x13C8;
-}
-
-// Указатель на оригинальную функцию
-typedef BOOL (WINAPI* GetCursorPos_t)(LPPOINT);
-GetCursorPos_t oGetCursorPos = nullptr;
-
-// Наша "злая" функция, которая будет работать ВНУТРИ игрового потока
-BOOL WINAPI HookedGetCursorPos(LPPOINT lpPoint) {
+DWORD WINAPI FinalAttempt(LPVOID lpParam) {
     uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
-    if (client) {
-        uintptr_t localPlayer = *(uintptr_t*)(client + offsets::dwLocalPlayerPawn);
-        if (localPlayer > 0x1000) {
-            int crosshairId = *(int*)(localPlayer + offsets::m_iIDEntIndex);
+    
+    // Используем только ДВА самых надежных адреса из твоего лога
+    uintptr_t dwLocalPlayer = 0x2057720;
+    uintptr_t m_iIDEntIndex = 0x13A8; // Попробуем этот как основной
+
+    while (true) {
+        // Стреляем ТОЛЬКО если активно окно игры (защита от кликов в меню/десктопе)
+        if (GetForegroundWindow() == FindWindowA("SDL_app", "Counter-Strike 2")) {
             
-            // Если кто-то в прицеле - СТРЕЛЯЕМ МГНОВЕННО
-            if (crosshairId > 0 && crosshairId <= 64) {
-                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+            uintptr_t local = *(uintptr_t*)(client + dwLocalPlayer);
+            if (local > 0x1000) {
+                int id = *(int*)(local + m_iIDEntIndex);
+
+                // Если ID врага и ты НЕ в меню (проверка по кнопке мыши или нажатой клавише)
+                if (id > 0 && id <= 64) {
+                    
+                    // Эмуляция клика
+                    mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+                    Sleep(20);
+                    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                    
+                    Sleep(200); // Пауза
+                }
             }
         }
+        Sleep(1);
     }
-    // Возвращаем управление оригинальной функции, чтобы игра не крашнулась
-    return oGetCursorPos(lpPoint);
+    return 0;
 }
 
-// Точка входа, которая делает подмену
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
-    if (reason == DLL_PROCESS_ATTACH) {
-        // Находим адрес функции в системе
-        uintptr_t funcAddr = (uintptr_t)GetProcAddress(GetModuleHandleA("user32.dll"), "GetCursorPos");
-        
-        // Магия: подменяем адрес функции на наш (IAT Hook)
-        // В реальном мире это сложнее, но для теста в CS2 мы сделаем это через простую подмену
-        oGetCursorPos = (GetCursorPos_t)funcAddr;
-        
-        // Запускаем через поток ТОЛЬКО чтобы сделать хук и выйти
-        CreateThread(NULL, 0, [](LPVOID) -> DWORD {
-            // Здесь должна быть логика MinHook, но мы попробуем просто вызвать наш код
-            // через бесконечный цикл, но в приоритетном режиме
-            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-            while(true) {
-                HookedGetCursorPos(NULL);
-                Sleep(1);
-            }
-            return 0;
-        }, NULL, 0, NULL);
-    }
+BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
+    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, FinalAttempt, 0, 0, 0));
     return TRUE;
 }
