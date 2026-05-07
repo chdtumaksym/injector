@@ -3,17 +3,18 @@
 #include <cstdio>
 #include <vector>
 
-// ДАННЫЕ ОБНОВЛЕНЫ ИЗ ТВОИХ ФАЙЛОВ offsets.json и client_dll.json
+// Теперь здесь ЧИСТЫЕ десятичные цифры (Decimal) прямо из твоего JSON! 
+// Больше никаких ошибок с кривым переводом в HEX.
 namespace Offsets {
     // Из offsets.json -> "client.dll"
-    constexpr uintptr_t dwLocalPlayerPawn = 0x2057720;  // 33912608
-    constexpr uintptr_t dwEntityList = 0x24D1990;       // 38608368
+    constexpr uintptr_t dwLocalPlayerPawn = 33912608; 
+    constexpr uintptr_t dwEntityList = 38608368;       
     
     // Из client_dll.json
-    constexpr uintptr_t m_hPawn = 0x6BC;        // CBasePlayerController -> m_hPawn (1724)
-    constexpr uintptr_t m_iTeamNum = 0x3EB;     // C_BaseEntity -> m_iTeamNum (1003)
-    constexpr uintptr_t m_pGameSceneNode = 0x330; // C_BaseEntity -> m_pGameSceneNode (816)
-    constexpr uintptr_t m_iHealth = 0x34C;      // C_BaseEntity -> m_iHealth (844) !!! БЫЛО 0x32C
+    constexpr uintptr_t m_hPawn = 1724;        // CBasePlayerController -> m_hPawn
+    constexpr uintptr_t m_iTeamNum = 1003;     // C_BaseEntity -> m_iTeamNum
+    constexpr uintptr_t m_pGameSceneNode = 816; // C_BaseEntity -> m_pGameSceneNode
+    constexpr uintptr_t m_iHealth = 844;       // C_BaseEntity -> m_iHealth
 }
 
 template <typename T>
@@ -37,9 +38,9 @@ void AimLogic() {
     // Читаем список сущностей
     uintptr_t entityList = Read<uintptr_t>(client + Offsets::dwEntityList);
     if (!entityList) {
-        // Если тут NULL, значит оффсет dwEntityList из offsets.json не подходит для этой версии игры
+        // Если тут NULL, значит оффсет всё еще кривой, но теперь это точная цифра из файла
         static bool error_logged = false;
-        if (!error_logged) { printf("[!] EntityList is NULL at 0x%llX\n", Offsets::dwEntityList); error_logged = true; }
+        if (!error_logged) { printf("[!] EntityList is NULL. Check decimal offset: %llu\n", Offsets::dwEntityList); error_logged = true; }
         return;
     }
 
@@ -72,7 +73,7 @@ void AimLogic() {
         uintptr_t gameSceneNode = Read<uintptr_t>(enemyPawn + Offsets::m_pGameSceneNode);
         if (!gameSceneNode) continue;
 
-        // BoneArray (0x1F0) — это стандарт для текущего билда
+        // BoneArray (0x1F0) — это стандарт для текущего билда, обычно он не меняется
         uintptr_t boneArray = Read<uintptr_t>(gameSceneNode + 0x1F0); 
         if (!boneArray) continue;
 
@@ -81,7 +82,7 @@ void AimLogic() {
 
         if (headPos.x != 0) {
             found_at_least_one = true;
-            printf("[BINGO] Враг %d | HP: %d | Head: %.2f, %.2f, %.2f\n", i, enemyHealth, headPos.x, headPos.y, headPos.z);
+            printf("[BINGO] Враг %d | HP: %d | Head: X:%.1f, Y:%.1f, Z:%.1f\n", i, enemyHealth, headPos.x, headPos.y, headPos.z);
         }
     }
     
@@ -95,9 +96,9 @@ DWORD WINAPI HackThread(LPVOID lpParam) {
     FILE* f;
     freopen_s(&f, "CONOUT$", "w", stdout);
     
-    printf("--- CS2 DEBUG V117 (JSON UPDATED) ---\n");
-    printf("Локальный Pawn: 0x%llX\n", Offsets::dwLocalPlayerPawn);
-    printf("Список сущностей: 0x%llX\n", Offsets::dwEntityList);
+    printf("--- CS2 DEBUG V118 (DECIMAL OFFSETS) ---\n");
+    printf("Локальный Pawn: %llu\n", Offsets::dwLocalPlayerPawn);
+    printf("Список сущностей: %llu\n", Offsets::dwEntityList);
 
     while (!(GetAsyncKeyState(VK_END) & 0x8000)) {
         AimLogic();
