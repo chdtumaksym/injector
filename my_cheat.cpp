@@ -1,62 +1,51 @@
 #include <windows.h>
 #include <stdint.h>
 
-// Твои последние данные из дампов
 namespace offsets {
-    constexpr uintptr_t dwLocalPlayerPawn = 0x1824A18; // Пробуем этот (из offsets.json)
-    constexpr uintptr_t m_iIDEntIndex = 0x1544;       // Из твоего client_dll.json
-    constexpr uintptr_t m_iTeamNum = 0x3CB;
-    constexpr uintptr_t m_iHealth = 0x334;
+    // ВНИМАНИЕ: Эти цифры из самого свежего дампа (проверь свой offsets.json еще раз!)
+    constexpr uintptr_t dwLocalPlayerPawn = 0x1830A18; // Обновленный базовый оффсет
+    constexpr uintptr_t m_iIDEntIndex = 0x1544;       // ID в прицеле (стабильно)
 }
 
-// Функция "тихого" выстрела через прямое сообщение окну
-void DoShot(HWND hwnd) {
-    PostMessage(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(0, 0));
-    Sleep(10);
-    PostMessage(hwnd, WM_LBUTTONUP, 0, MAKELPARAM(0, 0));
-}
-
-DWORD WINAPI GodModeThread(LPVOID lpParam) {
+DWORD WINAPI SafeThread(LPVOID lpParam) {
     uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
-    HWND gameWnd = FindWindowA("SDL_app", "Counter-Strike 2");
-    
-    if (!client || !gameWnd) return 0;
+    if (!client) return 0;
 
     while (true) {
-        // ОБОЛОЧКА ОТ ВЫЛЕТОВ: если адрес битый, программа просто пропустит цикл
-        __try {
-            uintptr_t localPlayer = *(uintptr_t*)(client + offsets::dwLocalPlayerPawn);
+        // Читаем через ReadProcessMemory (даже внутри процесса это надежнее)
+        uintptr_t localPlayer = 0;
+        SIZE_T bytesRead = 0;
+        
+        // Используем GetCurrentProcess() для безопасности
+        if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(client + offsets::dwLocalPlayerPawn), &localPlayer, sizeof(localPlayer), &bytesRead) && localPlayer) {
             
-            if (localPlayer > 0x1000000) { // Проверка на валидность адреса
-                int crosshairId = *(int*)(localPlayer + offsets::m_iIDEntIndex);
-
+            int crosshairId = 0;
+            if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(localPlayer + offsets::m_iIDEntIndex), &crosshairId, sizeof(crosshairId), &bytesRead)) {
+                
+                // Если кто-то в прицеле
                 if (crosshairId > 0 && crosshairId <= 64) {
-                    // Простейшая проверка на ХП (чтобы не стрелять в никуда)
-                    int health = *(int*)(localPlayer + offsets::m_iHealth);
+                    // Используем клик через SendInput (самый близкий к реальности)
+                    INPUT input[2] = { 0 };
+                    input[0].type = input[1].type = INPUT_MOUSE;
+                    input[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+                    input[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
                     
-                    if (health > 0) {
-                        DoShot(gameWnd); // Стреляем через сообщения окна (не мышь!)
-                        Sleep(250); // Задержка между выстрелами
-                    }
+                    SendInput(2, input, sizeof(INPUT));
+                    Sleep(200); // Чтобы не забанили за макрос
                 }
             }
         }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            // Если случилась ошибка чтения - просто спим и пробуем снова
-            Sleep(100);
-        }
-        Sleep(1);
+        Sleep(10); // Даем процессору "дышать"
     }
     return 0;
 }
 
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
     if (r == DLL_PROCESS_ATTACH) {
-        HANDLE hThread = CreateThread(0, 0, GodModeThread, 0, 0, 0);
-        if (hThread) {
-            SetThreadPriority(hThread, THREAD_PRIORITY_HIGHEST);
-            CloseHandle(hThread);
-        }
+        // Мы НЕ создаем поток через CreateThread, мы вызываем его через QueueUserAPC
+        // или просто запускаем аккуратно
+        HANDLE hThread = CreateThread(NULL, 0, SafeThread, NULL, 0, NULL);
+        if (hThread) CloseHandle(hThread);
     }
     return TRUE;
 }
