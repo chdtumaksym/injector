@@ -6,9 +6,10 @@
 #include <cmath>
 
 namespace offsets {
+    constexpr uintptr_t m_hPawn = 0x60C;        // Оффсет, на который ставит твоя нейросеть
     constexpr uintptr_t m_pGameSceneNode = 0x328; 
     constexpr uintptr_t m_vecAbsOrigin = 0xC8;   
-    constexpr uintptr_t m_iIDEntIndex = 0x1544; 
+    constexpr uintptr_t m_iIDEntIndex = 0x1544; // CrosshairID
 }
 
 struct Vector3 { float x, y, z; };
@@ -83,16 +84,12 @@ uintptr_t FindPattern(const char* moduleName, const char* pattern) {
     return 0;
 }
 
-// Проверка на адекватность координат (Sanity Check)
-bool IsValidCoordinate(float val) {
-    return std::isfinite(val) && val > -15000.0f && val < 15000.0f;
-}
-
 DWORD WINAPI MainThread(LPVOID lpParam) {
-    LogMessage("\n[CS2] --- V108 FILTERED HEURISTIC ENGINE ---\n");
+    LogMessage("\n[CS2] --- V109 AI DEBUNK EDITION ---\n");
     
     while (!GetModuleHandleA("client.dll")) Sleep(1000);
 
+    // Ищем адреса динамически, чтобы не вылететь после перезапуска игры
     uintptr_t lpPattern = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 85 C9 74 4E");
     uintptr_t elPattern = FindPattern("client.dll", "48 8B 0D ? ? ? ? 48 89 7C 24 ? 8B FA C1 EB");
 
@@ -100,104 +97,76 @@ DWORD WINAPI MainThread(LPVOID lpParam) {
     uintptr_t dwEntityList = ResolveRIP(elPattern, 3, 7);
 
     if (!dwLocalPlayerController || !dwEntityList) {
-        LogMessage("[!] CRITICAL FAILURE: Could not find base addresses.\n");
+        LogMessage("[!] CRITICAL FAILURE: Pattern scan failed. Game updated?\n");
         return 1;
     }
 
-    LogMessage("[+] Base Anchors Locked. Controller: %p | EntityList: %p\n", (void*)dwLocalPlayerController, (void*)dwEntityList);
-
-    static int dynamicPawnOffset = 0;
+    LogMessage("[+] Base Anchors Resolved! LP: %p | EL: %p\n", (void*)dwLocalPlayerController, (void*)dwEntityList);
 
     while (!(GetAsyncKeyState(VK_END) & 0x8000)) {
         uintptr_t controller = ReadMem<uintptr_t>(dwLocalPlayerController);
-        uintptr_t list = ReadMem<uintptr_t>(dwEntityList);
-
-        if (!controller || !list) {
+        if (!controller) {
             Sleep(500);
             continue;
         }
 
-        if (dynamicPawnOffset == 0) {
-            for (int off = 0x500; off < 0x850; off += 4) {
-                uint32_t handle = ReadMem<uint32_t>(controller + off);
-                if (handle == 0 || handle == 0xFFFFFFFF) continue;
-                
-                uint32_t idx = handle & 0x7FFF;
-                if (idx == 0 || idx > 64) continue; // У живого игрока индекс обычно от 1 до 64, отсекаем левые хендлы
-
-                uintptr_t entry = ReadMem<uintptr_t>(list + 0x8 * (idx >> 9) + 0x10);
-                if (!entry) continue;
-
-                uintptr_t pawn = ReadMem<uintptr_t>(entry + 120 * (idx & 0x1FF));
-                if (!pawn) continue;
-
-                uintptr_t sceneNode = ReadMem<uintptr_t>(pawn + offsets::m_pGameSceneNode);
-                if (sceneNode && sceneNode > 0x10000) {
-                    Vector3 pos = ReadMem<Vector3>(sceneNode + offsets::m_vecAbsOrigin);
-                    
-                    // Жесткий фильтр на мусорные координаты
-                    if ((pos.x != 0.0f || pos.y != 0.0f) && IsValidCoordinate(pos.x) && IsValidCoordinate(pos.y)) {
-                        dynamicPawnOffset = off;
-                        LogMessage("[Heuristic] Locked m_hPawn at dynamic offset: 0x%X\n", off);
-                        break;
-                    }
-                }
-            }
-
-            if (dynamicPawnOffset == 0) {
-                static bool scanLog = false;
-                if (!scanLog) { LogMessage("[Scan] Filtering garbage... Waiting for valid player spawn.\n"); scanLog = true; }
-                Sleep(1000);
-                continue;
-            }
+        uint32_t hPawn = ReadMem<uint32_t>(controller + offsets::m_hPawn);
+        if (hPawn == 0 || hPawn == 0xFFFFFFFF) {
+            static bool pawnLog = false;
+            if (!pawnLog) { LogMessage("[Chain] m_hPawn (0x%X) is empty. Are you spawned?\n", offsets::m_hPawn); pawnLog = true; }
+            Sleep(500);
+            continue;
         }
 
-        bool validTarget = false;
-        uint32_t handle = ReadMem<uint32_t>(controller + dynamicPawnOffset);
+        uintptr_t entityList = ReadMem<uintptr_t>(dwEntityList);
+        if (!entityList) {
+            Sleep(500);
+            continue;
+        }
+
+        // Логика распаковки хэндла
+        uint32_t idx = hPawn & 0x7FFF;
+        uintptr_t listEntry = ReadMem<uintptr_t>(entityList + 0x8 * (idx >> 9) + 0x10);
         
-        if (handle != 0 && handle != 0xFFFFFFFF) {
-            uint32_t idx = handle & 0x7FFF;
-            uintptr_t entry = ReadMem<uintptr_t>(list + 0x8 * (idx >> 9) + 0x10);
-            if (entry) {
-                uintptr_t pawn = ReadMem<uintptr_t>(entry + 120 * (idx & 0x1FF));
-                if (pawn) {
-                    uintptr_t sceneNode = ReadMem<uintptr_t>(pawn + offsets::m_pGameSceneNode);
-                    if (sceneNode) {
-                        Vector3 pos = ReadMem<Vector3>(sceneNode + offsets::m_vecAbsOrigin);
-                        
-                        // Если в процессе игры координаты сходят с ума - сбрасываем оффсет
-                        if (!IsValidCoordinate(pos.x) || !IsValidCoordinate(pos.y)) {
-                            dynamicPawnOffset = 0;
-                            continue;
-                        }
+        if (!listEntry) {
+            static uint32_t lastIdx = 0;
+            if (lastIdx != idx) {
+                LogMessage("[Chain] Broken ListEntry for index %d. The offset 0x%X might be wrong.\n", idx, offsets::m_hPawn);
+                lastIdx = idx;
+            }
+            Sleep(500);
+            continue;
+        }
 
-                        static int tick = 0;
-                        if (tick++ % 10 == 0) {
-                            LogMessage("POS: X=%.1f Y=%.1f Z=%.1f\n", pos.x, pos.y, pos.z);
-                        }
-                        validTarget = true;
+        uintptr_t localPawn = ReadMem<uintptr_t>(listEntry + 120 * (idx & 0x1FF));
+        if (!localPawn) {
+            Sleep(500);
+            continue;
+        }
 
-                        if (GetAsyncKeyState(VK_CAPITAL) & 0x8000) {
-                            int crosshairId = ReadMem<int>(pawn + offsets::m_iIDEntIndex);
-                            if (crosshairId > 0 && crosshairId <= 64) {
-                                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-                                Sleep(10);
-                                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-                                Sleep(150);
-                            }
-                        }
-                    }
-                }
+        // Читаем координаты чисто для лога, чтобы знать, что всё работает
+        uintptr_t sceneNode = ReadMem<uintptr_t>(localPawn + offsets::m_pGameSceneNode);
+        if (sceneNode) {
+            Vector3 pos = ReadMem<Vector3>(sceneNode + offsets::m_vecAbsOrigin);
+            static int tick = 0;
+            if (tick++ % 10 == 0 && std::isfinite(pos.x) && pos.x != 0.0f) {
+                LogMessage("[Success] Target Locked! POS: X=%.1f Y=%.1f\n", pos.x, pos.y);
             }
         }
 
-        if (!validTarget) {
-            static bool resetLog = false;
-            if (!resetLog) { LogMessage("[Heuristic] Target lost. Rescanning...\n"); resetLog = true; }
-            dynamicPawnOffset = 0; 
+        // ТРИГГЕРБОТ
+        if (GetAsyncKeyState(VK_CAPITAL) & 0x8000) { // Зажат CapsLock
+            int crossId = ReadMem<int>(localPawn + offsets::m_iIDEntIndex);
+            if (crossId > 0 && crossId <= 64) {
+                LogMessage("[Triggerbot] Firing at Entity ID: %d\n", crossId);
+                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+                Sleep(10);
+                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                Sleep(150);
+            }
         }
 
-        Sleep(50);
+        Sleep(20); // Быстрый поллинг для триггербота
     }
 
     LogMessage("[!] Unloading.\n");
