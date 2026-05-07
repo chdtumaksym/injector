@@ -1,29 +1,35 @@
 #include <windows.h>
+#include <fstream>
 #include <stdint.h>
 
-namespace offsets {
-    constexpr uintptr_t dwLocalPlayerPawn = 0x2057720; 
-    constexpr uintptr_t m_iIDEntIndex = 0x13C8;
-    // Оффсет для прямой стрельбы (проверь в дампере dwForceAttack)
-    constexpr uintptr_t dwForceAttack = 0x181D120; // Примерный адрес для выстрела
-}
-
-DWORD WINAPI FinalForceThread(LPVOID lpParam) {
+DWORD WINAPI FinderThread(LPVOID lpParam) {
+    std::ofstream log("FINAL_OFFSET.txt", std::ios::app);
     uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
-    if (!client) return 0;
+    uintptr_t localPlayerPawn = 0x2057720; // Твой рабочий адрес игрока
 
     while (true) {
-        uintptr_t localPlayer = *(uintptr_t*)(client + offsets::dwLocalPlayerPawn);
+        uintptr_t localPlayer = *(uintptr_t*)(client + localPlayerPawn);
         if (localPlayer > 0x1000) {
-            int crosshairId = *(int*)(localPlayer + offsets::m_iIDEntIndex);
+            // Проверяем 4 самых вероятных кандидата из твоего лога
+            uintptr_t targets[] = { 0x13A8, 0x13C8, 0x1410, 0x1544 };
+            
+            for (uintptr_t offset : targets) {
+                int id = *(int*)(localPlayer + offset);
+                
+                // Если при наведении на врага появилось ID (1-64)
+                if (id > 0 && id <= 64) {
+                    // Пишем в лог, какой именно оффсет сработал
+                    log << "TRIGGERED! Offset: 0x" << std::hex << offset << "\n";
+                    log.flush();
 
-            // Если в прицеле враг
-            if (crosshairId > 0 && crosshairId <= 64) {
-                // Вместо мышки, пишем команду "ВЫСТРЕЛ" прямо в память
-                *(int*)(client + offsets::dwForceAttack) = 65537; // Нажать
-                Sleep(20);
-                *(int*)(client + offsets::dwForceAttack) = 256;   // Отпустить
-                Sleep(150); 
+                    // СТРЕЛЯЕМ
+                    mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+                    Sleep(10);
+                    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                    
+                    Sleep(200); // Пауза, чтобы не спамить
+                    break;
+                }
             }
         }
         Sleep(1);
@@ -32,6 +38,6 @@ DWORD WINAPI FinalForceThread(LPVOID lpParam) {
 }
 
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
-    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, FinalForceThread, 0, 0, 0));
+    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, FinderThread, 0, 0, 0));
     return TRUE;
 }
