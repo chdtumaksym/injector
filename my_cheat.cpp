@@ -1,45 +1,49 @@
 #include <windows.h>
+#include <fstream>
+#include <vector>
 #include <stdint.h>
 
-// Используем диапазон, который выдал твой успешный лог
-DWORD WINAPI UltimateTrigger(LPVOID lpParam) {
+DWORD WINAPI LearningTrigger(LPVOID lpParam) {
     uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
-    if (!client) return 0;
-
-    // Твой проверенный адрес игрока (из последнего удачного лога)
-    // ВНИМАНИЕ: Если перезапустил карту, адрес может измениться!
-    uintptr_t localPlayerPawn = 0x2057720; 
+    uintptr_t localPlayerPawn = 0x2057720; // Твой базовый оффсет
+    uintptr_t foundOffset = 0;
 
     while (true) {
-        uintptr_t localPlayer = *reinterpret_cast<uintptr_t*>(client + localPlayerPawn);
-        
-        if (localPlayer > 0x1000000) {
-            // Сканируем только те 3 оффсета, которые "мигали" в твоем логе
-            uintptr_t targetOffsets[] = { 0x13C8, 0x13A8, 0x1458, 0x1544 };
+        uintptr_t local = *(uintptr_t*)(client + localPlayerPawn);
+        if (local > 0x1000000) {
             
-            for (uintptr_t off : targetOffsets) {
-                int id = *reinterpret_cast<int*>(localPlayer + off);
-
-                // Если ID врага (1-64)
+            // ЕСЛИ МЫ ЕЩЕ НЕ НАШЛИ ОФФСЕТ
+            if (foundOffset == 0) {
+                // Если ТЫ САМ нажал ЛКМ на враге
+                if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) {
+                    for (uintptr_t i = 0x1300; i < 0x1600; i += 4) {
+                        int val = *(int*)(local + i);
+                        // Если в этот момент по адресу лежит ID врага (1-64)
+                        if (val > 0 && val <= 64) {
+                            foundOffset = i; // МЫ НАШЛИ ЕГО!
+                            Beep(1000, 200); // Писк - оффсет найден!
+                            break;
+                        }
+                    }
+                }
+            } 
+            // ЕСЛИ ОФФСЕТ УЖЕ НАЙДЕН - РАБОТАЕМ КАК ТРИГГЕР
+            else {
+                int id = *(int*)(local + foundOffset);
                 if (id > 0 && id <= 64) {
-                    // Используем самый надежный метод клика
                     mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-                    Sleep(20);
+                    Sleep(10);
                     mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-                    
-                    Sleep(200); // Пауза, чтобы не спамить
-                    break;
+                    Sleep(200);
                 }
             }
         }
-        Sleep(1); // Максимальная скорость
+        Sleep(1);
     }
     return 0;
 }
 
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
-    if (r == DLL_PROCESS_ATTACH) {
-        CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)UltimateTrigger, nullptr, 0, nullptr);
-    }
+    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, LearningTrigger, 0, 0, 0));
     return TRUE;
 }
