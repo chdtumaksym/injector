@@ -1,7 +1,7 @@
 #include <windows.h>
 #include <stdint.h>
 
-DWORD WINAPI ProTrigger(LPVOID lpParam) {
+DWORD WINAPI SmartTrigger(LPVOID lpParam) {
     uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
     uintptr_t localPlayerPawn = 0x2057720; 
     uintptr_t foundOffset = 0;
@@ -11,31 +11,30 @@ DWORD WINAPI ProTrigger(LPVOID lpParam) {
         if (local > 0x1000000) {
             
             if (foundOffset == 0) {
-                // ОБУЧЕНИЕ: Нажми ЛКМ ТОЛЬКО когда прицел на враге!
-                if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) {
+                // ОБУЧЕНИЕ: Зажми ПКМ, когда прицел ТОЧНО на враге
+                if (GetAsyncKeyState(VK_RBUTTON) & 0x8000) {
                     for (uintptr_t i = 0x1300; i < 0x1600; i += 4) {
                         int val = *(int*)(local + i);
-                        // Ищем адрес, который равен ID врага (1-64)
+                        // Если значение похоже на ID игрока и это НЕ мусор
                         if (val > 0 && val <= 64) {
-                            // Проверяем соседний байт, чтобы отсечь мусор
-                            if (*(int*)(local + i + 4) == 0) { 
+                            // Проверка на стабильность: ID прицела не должен меняться каждую мс
+                            Sleep(10);
+                            if (*(int*)(local + i) == val) {
                                 foundOffset = i;
-                                Beep(1000, 200); // ПИК - НАШЛИ!
+                                Beep(1000, 300); // ПОБЕДНЫЙ ПИК
                                 break;
                             }
                         }
                     }
                 }
             } else {
-                // РАБОТА: Стреляем только по окну игры
-                if (GetForegroundWindow() == FindWindowA("SDL_app", "Counter-Strike 2")) {
-                    int id = *(int*)(local + foundOffset);
-                    if (id > 0 && id <= 64) {
-                        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-                        Sleep(20);
-                        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-                        Sleep(200); // Пауза, чтобы не было спама
-                    }
+                // РАБОТА: Стреляем только при наведении
+                int id = *(int*)(local + foundOffset);
+                if (id > 0 && id <= 64) {
+                    mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+                    Sleep(20);
+                    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                    Sleep(250); 
                 }
             }
         }
@@ -45,6 +44,6 @@ DWORD WINAPI ProTrigger(LPVOID lpParam) {
 }
 
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
-    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, ProTrigger, 0, 0, 0));
+    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, SmartTrigger, 0, 0, 0));
     return TRUE;
 }
