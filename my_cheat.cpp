@@ -1,44 +1,44 @@
 #include <windows.h>
-#include <fstream>
 #include <stdint.h>
-#include <vector>
 
-DWORD WINAPI TruthThread(LPVOID lpParam) {
-    std::ofstream log("TRUTH_LOG.txt", std::ios::app);
+namespace offsets {
+    constexpr uintptr_t dwLocalPlayerPawn = 0x2057720; 
+    constexpr uintptr_t m_iIDEntIndex = 0x13A8; // ТВОЙ ПОБЕДНЫЙ ОФФСЕТ
+}
+
+DWORD WINAPI FinalTrigger(LPVOID lpParam) {
     uintptr_t client = (uintptr_t)GetModuleHandleA("client.dll");
-    uintptr_t localPlayer = 0;
-
-    log << "--- SEARCHING FOR THE TRUTH ---\n";
-    log.flush();
+    if (!client) return 0;
 
     while (true) {
-        localPlayer = *(uintptr_t*)(client + 0x2057720); // Твой проверенный адрес
-        if (localPlayer > 0x1000) {
-            // Если ты зажал ПРАВУЮ кнопку мыши (как триггер для сканера)
-            if (GetAsyncKeyState(VK_RBUTTON)) {
-                log << "Scanning while RBUTTON is pressed...\n";
-                // Сканируем огромный кусок памяти игрока
-                for (uintptr_t i = 0x1300; i < 0x1600; i += 4) {
-                    int val = *(int*)(localPlayer + i);
-                    if (val > 0 && val <= 64) {
-                        log << "Potential ID Found! Offset: 0x" << std::hex << i << " Value: " << std::dec << val << "\n";
-                        
-                        // СРАЗУ СТРЕЛЯЕМ, чтобы ты понял, тот ли это адрес
-                        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-                        Sleep(10);
-                        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-                    }
+        // Работает только если окно игры активно
+        if (GetForegroundWindow() == FindWindowA("SDL_app", "Counter-Strike 2")) {
+            uintptr_t localPlayer = *reinterpret_cast<uintptr_t*>(client + offsets::dwLocalPlayerPawn);
+            
+            if (localPlayer > 0x1000) {
+                int crosshairId = *reinterpret_cast<int*>(localPlayer + offsets::m_iIDEntIndex);
+
+                // Если ID врага (1-64)
+                if (crosshairId > 0 && crosshairId <= 64) {
+                    // Одиночный четкий выстрел
+                    mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+                    Sleep(20);
+                    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                    
+                    // Пауза, чтобы не забанил античит за "автомат"
+                    Sleep(200); 
                 }
-                log.flush();
-                Sleep(500);
             }
         }
-        Sleep(10);
+        Sleep(1); 
     }
     return 0;
 }
 
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID p) {
-    if (r == DLL_PROCESS_ATTACH) CloseHandle(CreateThread(0, 0, TruthThread, 0, 0, 0));
+    if (r == DLL_PROCESS_ATTACH) {
+        HANDLE hThread = CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)FinalTrigger, nullptr, 0, nullptr);
+        if (hThread) CloseHandle(hThread);
+    }
     return TRUE;
 }
